@@ -5,10 +5,15 @@ import {
   AlertTriangle,
   ArrowDownRight,
   ArrowUpRight,
+  BarChart3,
   Clock3,
+  Database,
   Filter,
+  Gauge,
+  LineChart,
   Minus,
   Moon,
+  Radio,
   RefreshCw,
   ShieldAlert,
   Sun,
@@ -16,11 +21,19 @@ import {
   TrendingUp
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
-import { OptionContract, OptionSnapshot, RiskFlag } from "@/lib/types";
+import {
+  FuturesBasisHistoryPoint,
+  FuturesBasisSnapshot,
+  FuturesCurvePoint,
+  OptionContract,
+  OptionSnapshot,
+  RiskFlag
+} from "@/lib/types";
 
 type SideFilter = "P" | "C" | "ALL";
 type MetricMode = "apr" | "iv" | "delta" | "oi";
 type ThemeMode = "light" | "dark";
+type ViewMode = "options" | "futures";
 
 interface DashboardProps {
   initialSnapshot: OptionSnapshot;
@@ -72,6 +85,15 @@ function pct(value: number | null | undefined, digits = 1) {
   }
 
   return `${(value * 100).toFixed(digits)}%`;
+}
+
+function signedPct(value: number | null | undefined, digits = 2) {
+  if (value === null || value === undefined || !Number.isFinite(value)) {
+    return "--";
+  }
+
+  const sign = value > 0 ? "+" : "";
+  return `${sign}${(value * 100).toFixed(digits)}%`;
 }
 
 function money(value: number | null | undefined, compactMode = false) {
@@ -147,6 +169,40 @@ function latestAge(snapshot: OptionSnapshot) {
   return `${Math.round(snapshot.ageMs / 1000)}s`;
 }
 
+function snapshotAge(ageMs: number | null | undefined) {
+  if (ageMs === null || ageMs === undefined) return "warming";
+  if (ageMs < 1000) return "刚刚";
+  if (ageMs < 60_000) return `${Math.round(ageMs / 1000)}s`;
+  return `${Math.round(ageMs / 60_000)}m`;
+}
+
+function formatDateTime(value: number | null | undefined) {
+  if (value === null || value === undefined || !Number.isFinite(value)) {
+    return "--";
+  }
+
+  return new Date(value).toLocaleString();
+}
+
+function tenorLabel(point: FuturesCurvePoint) {
+  if (point.contractType === "PERPETUAL") return "永续";
+  if (point.dte === null) return point.label;
+  return `${point.label} · ${point.dte.toFixed(0)}D`;
+}
+
+function basisMetric(point: FuturesCurvePoint) {
+  return point.contractType === "PERPETUAL"
+    ? point.annualizedFunding ?? point.basisPct
+    : point.annualizedBasis ?? point.basisPct;
+}
+
+function basisTone(value: number | null | undefined) {
+  if (value === null || value === undefined || !Number.isFinite(value)) return "neutral";
+  if (value > 0) return "up";
+  if (value < 0) return "down";
+  return "neutral";
+}
+
 function nearestExpiry(snapshot: OptionSnapshot) {
   return snapshot.expiries.find((expiry) => expiry.dte >= 2)?.expiry ?? snapshot.expiries[0]?.expiry ?? "ALL";
 }
@@ -154,6 +210,8 @@ function nearestExpiry(snapshot: OptionSnapshot) {
 export function Dashboard({ initialSnapshot }: DashboardProps) {
   const [snapshot, setSnapshot] = useState(initialSnapshot);
   const [theme, setTheme] = useState<ThemeMode>("light");
+  const [view, setView] = useState<ViewMode>("options");
+  const [futuresSnapshot, setFuturesSnapshot] = useState<FuturesBasisSnapshot | null>(null);
   const [side, setSide] = useState<SideFilter>("P");
   const [metric, setMetric] = useState<MetricMode>("apr");
   const [expiry, setExpiry] = useState(() => nearestExpiry(initialSnapshot));
@@ -207,6 +265,35 @@ export function Dashboard({ initialSnapshot }: DashboardProps) {
       clearInterval(timer);
     };
   }, []);
+
+  useEffect(() => {
+    if (view !== "futures") {
+      return;
+    }
+
+    let cancelled = false;
+
+    async function load() {
+      try {
+        const response = await fetch("/api/futures/basis", { cache: "no-store" });
+        if (!response.ok) return;
+        const next = (await response.json()) as FuturesBasisSnapshot;
+        if (!cancelled) {
+          setFuturesSnapshot(next);
+        }
+      } catch {
+        // The futures tab keeps the previous SQLite snapshot if Binance is temporarily unavailable.
+      }
+    }
+
+    const timer = setInterval(load, 15_000);
+    void load();
+
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [view]);
 
   useEffect(() => {
     if (
@@ -347,6 +434,28 @@ export function Dashboard({ initialSnapshot }: DashboardProps) {
         </div>
       </header>
 
+      <nav className="view-tabs" aria-label="看板视图">
+        <button
+          type="button"
+          aria-pressed={view === "options"}
+          className={view === "options" ? "active" : ""}
+          onClick={() => setView("options")}
+        >
+          <Target size={16} />
+          <span>期权</span>
+        </button>
+        <button
+          type="button"
+          aria-pressed={view === "futures"}
+          className={view === "futures" ? "active" : ""}
+          onClick={() => setView("futures")}
+        >
+          <BarChart3 size={16} />
+          <span>期货 / Basis</span>
+        </button>
+      </nav>
+
+      {view === "options" ? (
       <section className="workspace">
         <aside className="sidebar panel">
           <div className="panel-title">
@@ -720,9 +829,233 @@ export function Dashboard({ initialSnapshot }: DashboardProps) {
           )}
         </aside>
       </section>
+      ) : (
+        <FuturesWorkspace snapshot={futuresSnapshot} />
+      )}
 
       {snapshot.error ? <div className="error-toast">{snapshot.error}</div> : null}
     </main>
+  );
+}
+
+function FuturesWorkspace({ snapshot }: { snapshot: FuturesBasisSnapshot | null }) {
+  const curve = snapshot?.curve ?? [];
+  const history = snapshot?.history ?? [];
+  const perp = curve.find((point) => point.contractType === "PERPETUAL") ?? null;
+  const currentQuarter = curve.find((point) => point.contractType === "CURRENT_QUARTER") ?? null;
+  const nextQuarter = curve.find((point) => point.contractType === "NEXT_QUARTER") ?? null;
+  const basisValues = curve
+    .map((point) => basisMetric(point))
+    .filter((value): value is number => value !== null && Number.isFinite(value));
+  const maxAbsBasis = Math.max(0.05, ...basisValues.map((value) => Math.abs(value)));
+  const status = snapshot?.status ?? "warming";
+  const steepness =
+    currentQuarter?.annualizedBasis !== null &&
+    currentQuarter?.annualizedBasis !== undefined &&
+    nextQuarter?.annualizedBasis !== null &&
+    nextQuarter?.annualizedBasis !== undefined
+      ? nextQuarter.annualizedBasis - currentQuarter.annualizedBasis
+      : null;
+
+  return (
+    <section className="futures-workspace">
+      <section className="panel futures-overview">
+        <div className="panel-title spread">
+          <span>
+            <BarChart3 size={17} />
+            BTC 期限溢价
+          </span>
+          <em className={status}>{status.toUpperCase()} · {snapshotAge(snapshot?.ageMs)}</em>
+        </div>
+        <div className="basis-metrics">
+          <Metric label="Binance Index" value={money(snapshot?.indexPx)} strong />
+          <Metric label="Perp Premium" value={signedPct(perp?.basisPct)} />
+          <Metric label="Funding 年化" value={signedPct(perp?.annualizedFunding)} />
+          <Metric label="Curve Steepness" value={signedPct(steepness)} />
+          <Metric label="Current Q Basis" value={signedPct(currentQuarter?.annualizedBasis)} />
+          <Metric label="Next Q Basis" value={signedPct(nextQuarter?.annualizedBasis)} />
+        </div>
+      </section>
+
+      <section className="futures-grid">
+        <section className="panel basis-curve-panel">
+          <div className="panel-title spread">
+            <span>
+              <LineChart size={17} />
+              Basis Curve
+            </span>
+            <em>Binance USDⓈ-M</em>
+          </div>
+          {curve.length === 0 ? (
+            <div className="empty-state">等待 Binance 期货数据</div>
+          ) : (
+            <div className="basis-curve">
+              {curve.map((point) => {
+                const value = basisMetric(point);
+                const barWidth = value === null ? 0 : Math.min((Math.abs(value) / maxAbsBasis) * 50, 50);
+                const barStyle = value !== null && value < 0
+                  ? { right: "50%", width: `${barWidth}%` }
+                  : { left: "50%", width: `${barWidth}%` };
+
+                return (
+                  <div className="basis-row" key={point.symbol}>
+                    <div>
+                      <strong>{tenorLabel(point)}</strong>
+                      <span>{point.symbol}</span>
+                    </div>
+                    <div className="basis-bar">
+                      <b />
+                      <i className={basisTone(value)} style={barStyle} />
+                    </div>
+                    <strong className={basisTone(value)}>
+                      {point.contractType === "PERPETUAL" ? signedPct(point.annualizedFunding) : signedPct(point.annualizedBasis)}
+                    </strong>
+                    <em>{signedPct(point.basisPct)}</em>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </section>
+
+        <section className="panel funding-panel">
+          <div className="panel-title spread">
+            <span>
+              <Gauge size={17} />
+              Funding
+            </span>
+            <em>{perp?.symbol ?? "--"}</em>
+          </div>
+          <div className="funding-stack">
+            <Metric label="当前 Funding" value={signedPct(perp?.fundingRate, 4)} strong />
+            <Metric label="年化 Funding" value={signedPct(perp?.annualizedFunding)} />
+            <Metric label="下一次结算" value={formatDateTime(perp?.nextFundingTime)} />
+            <Metric label="Open Interest" value={compact.format(perp?.openInterest ?? 0)} />
+          </div>
+          <div className="db-line" title={snapshot?.dbPath ?? ""}>
+            <Database size={15} />
+            <span>SQLite</span>
+            <strong>{snapshot?.history.length ?? 0} pts</strong>
+          </div>
+        </section>
+      </section>
+
+      <section className="panel table-panel futures-table-panel">
+        <div className="panel-title spread">
+          <span>
+            <Radio size={17} />
+            Futures Watch
+          </span>
+          <em>{curve.length} BTC contracts</em>
+        </div>
+        <div className="futures-table">
+          <div className="futures-head">
+            <span>合约</span>
+            <span>Mark / Index</span>
+            <span>Basis</span>
+            <span>年化</span>
+            <span>Funding</span>
+            <span>OI</span>
+            <span>24h Vol</span>
+            <span>时间</span>
+          </div>
+          {curve.length === 0 ? (
+            <div className="empty-state">等待 SQLite 快照</div>
+          ) : (
+            curve.map((point) => (
+              <div className="futures-row" key={point.symbol}>
+                <span>
+                  <strong>{tenorLabel(point)}</strong>
+                  <em>{point.symbol}</em>
+                </span>
+                <span>
+                  {money(point.markPx)} / {money(point.indexPx)}
+                </span>
+                <span className={basisTone(point.basisPct)}>{signedPct(point.basisPct)}</span>
+                <span className={basisTone(basisMetric(point))}>
+                  {point.contractType === "PERPETUAL" ? signedPct(point.annualizedFunding) : signedPct(point.annualizedBasis)}
+                </span>
+                <span>{point.contractType === "PERPETUAL" ? signedPct(point.fundingRate, 4) : "--"}</span>
+                <span>{compact.format(point.openInterest ?? 0)}</span>
+                <span>{money(point.quoteVolume24h, true)}</span>
+                <span>{formatDateTime(point.sourceTs)}</span>
+              </div>
+            ))
+          )}
+        </div>
+      </section>
+
+      <section className="panel basis-history-panel">
+        <div className="panel-title spread">
+          <span>
+            <Activity size={17} />
+            历史曲线
+          </span>
+          <em>{history.length} samples</em>
+        </div>
+        <div className="history-cards">
+          {curve.length === 0 ? (
+            <div className="empty-state">等待采样</div>
+          ) : (
+            curve.map((point) => (
+              <div className="history-card" key={point.symbol}>
+                <div>
+                  <strong>{tenorLabel(point)}</strong>
+                  <span>{point.contractType === "PERPETUAL" ? "annualized funding" : "annualized basis"}</span>
+                </div>
+                <BasisSparkline
+                  contractType={point.contractType}
+                  history={history.filter((item) => item.symbol === point.symbol)}
+                />
+              </div>
+            ))
+          )}
+        </div>
+      </section>
+
+      {snapshot?.error ? <div className="error-toast">{snapshot.error}</div> : null}
+    </section>
+  );
+}
+
+function BasisSparkline({
+  contractType,
+  history
+}: {
+  contractType: FuturesCurvePoint["contractType"];
+  history: FuturesBasisHistoryPoint[];
+}) {
+  const width = 260;
+  const height = 58;
+  const padding = 5;
+  const values = history
+    .map((item) => (contractType === "PERPETUAL" ? item.annualizedFunding : item.annualizedBasis))
+    .filter((value): value is number => value !== null && Number.isFinite(value));
+
+  if (values.length < 2) {
+    return <div className="sparkline-empty">--</div>;
+  }
+
+  const min = Math.min(...values);
+  const max = Math.max(...values);
+  const range = max - min || 1;
+  const step = (width - padding * 2) / (values.length - 1);
+  const points = values
+    .map((value, index) => {
+      const x = padding + index * step;
+      const y = height - padding - ((value - min) / range) * (height - padding * 2);
+      return `${x.toFixed(1)},${y.toFixed(1)}`;
+    })
+    .join(" ");
+  const latest = values[values.length - 1] ?? null;
+
+  return (
+    <div className="sparkline-wrap">
+      <svg aria-hidden="true" viewBox={`0 0 ${width} ${height}`}>
+        <polyline points={points} />
+      </svg>
+      <strong className={basisTone(latest)}>{signedPct(latest)}</strong>
+    </div>
   );
 }
 

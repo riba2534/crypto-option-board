@@ -89,3 +89,53 @@ export interface OptionSnapshot {
   expiries: ExpirySummary[];
   options: OptionContract[];
 }
+
+export type FuturesContractType = "PERPETUAL" | "CURRENT_QUARTER" | "NEXT_QUARTER";
+
+export interface FuturesCurvePoint {
+  exchange: "BINANCE";
+  pair: "BTCUSDT";
+  symbol: string;
+  contractType: FuturesContractType;
+  label: string;
+  expiryTs: number | null;
+  dte: number | null;
+  indexPx: number | null;
+  markPx: number | null;
+  basisAbs: number | null;
+  basisPct: number | null;
+  annualizedBasis: number | null;
+  fundingRate: number | null;
+  annualizedFunding: number | null;
+  nextFundingTime: number | null;
+  openInterest: number | null;
+  volume24h: number | null;
+  quoteVolume24h: number | null;
+  sourceTs: number | null;
+}
+
+export interface FuturesBasisHistoryPoint {
+  ts: number;
+  symbol: string;
+  contractType: FuturesContractType;
+  basisPct: number | null;
+  annualizedBasis: number | null;
+  fundingRate: number | null;
+  annualizedFunding: number | null;
+  markPx: number | null;
+  indexPx: number | null;
+}
+
+export interface FuturesBasisSnapshot {
+  status: SnapshotStatus;
+  generatedAt: number;
+  refreshedAt: number | null;
+  nextRefreshAt: number | null;
+  ageMs: number | null;
+  source: string;
+  error: string | null;
+  dbPath: string;
+  indexPx: number | null;
+  curve: FuturesCurvePoint[];
+  history: FuturesBasisHistoryPoint[];
+}
