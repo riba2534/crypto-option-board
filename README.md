@@ -118,13 +118,13 @@ docker rm crypto-option-board
 | 变量 | 默认值 | 说明 |
 | --- | --- | --- |
 | `OKX_BASE_URL` | `https://www.okx.com` | OKX API 基础地址 |
-| `HOSTNAME` | `0.0.0.0` | 服务监听地址 |
+| `BIND_HOST` | `0.0.0.0` | 服务监听地址 |
 | `PORT` | `3000` | 服务监听端口 |
 
 示例：
 
 ```bash
-OKX_BASE_URL=https://www.okx.com HOSTNAME=0.0.0.0 PORT=3000 npm run start
+OKX_BASE_URL=https://www.okx.com BIND_HOST=0.0.0.0 PORT=3000 npm run start
 ```
 
 ## 数据来源
@@ -196,6 +196,7 @@ coveredCallAPR =
 ├── public/
 │   └── logo.svg
 ├── scripts/
+│   ├── prepare-standalone.mjs
 │   └── start-standalone.mjs
 ├── src/
 │   ├── app/

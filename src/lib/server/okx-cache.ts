@@ -1,5 +1,9 @@
 import { OptionSnapshot } from "@/lib/types";
-import { createEmptySnapshot, fetchBtcOptionSnapshot } from "@/lib/server/okx-client";
+import {
+  createEmptySnapshot,
+  fetchBtcOptionSnapshot,
+  refreshOptionRuntimeState
+} from "@/lib/server/okx-client";
 
 const REFRESH_INTERVAL_MS = 5_000;
 const STALE_AFTER_MS = 20_000;
@@ -97,7 +101,9 @@ function withAge(snapshot: OptionSnapshot): OptionSnapshot {
     generatedAt: now,
     ageMs,
     nextRefreshAt:
-      snapshot.refreshedAt === null ? now + REFRESH_INTERVAL_MS : snapshot.refreshedAt + REFRESH_INTERVAL_MS
+      snapshot.nextRefreshAt ??
+      (snapshot.refreshedAt === null ? now + REFRESH_INTERVAL_MS : snapshot.refreshedAt + REFRESH_INTERVAL_MS),
+    options: snapshot.options.map((option) => refreshOptionRuntimeState(option, now))
   };
 }
 

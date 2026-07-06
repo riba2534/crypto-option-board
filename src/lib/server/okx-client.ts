@@ -3,6 +3,7 @@ import { OptionContract, OptionSnapshot, RiskFlag } from "@/lib/types";
 const OKX_BASE_URL = process.env.OKX_BASE_URL ?? "https://www.okx.com";
 const REQUEST_TIMEOUT_MS = 4500;
 const INSTRUMENT_FAMILY = "BTC-USD";
+const STALE_QUOTE_AFTER_MS = 30_000;
 
 interface OkxResponse<T> {
   code: string;
@@ -110,6 +111,9 @@ async function fetchOkx<T>(path: string): Promise<T[]> {
     if (payload.code !== "0") {
       throw new Error(`OKX ${path} code ${payload.code}: ${payload.msg}`);
     }
+    if (!Array.isArray(payload.data)) {
+      throw new Error(`OKX ${path} returned invalid data`);
+    }
 
     return payload.data;
   } finally {
@@ -119,14 +123,24 @@ async function fetchOkx<T>(path: string): Promise<T[]> {
 
 async function fetchIndexTicker(): Promise<OkxIndexTicker | null> {
   const candidates = ["BTC-USD", "BTC-USDT"];
+  let lastError: unknown = null;
 
   for (const instId of candidates) {
-    const data = await fetchOkx<OkxIndexTicker>(
-      `/api/v5/market/index-tickers?instId=${instId}`
-    );
-    if (data[0]) {
-      return data[0];
+    try {
+      const data = await fetchOkx<OkxIndexTicker>(
+        `/api/v5/market/index-tickers?instId=${instId}`
+      );
+      if (data[0]) {
+        return data[0];
+      }
+    } catch (error) {
+      lastError = error;
     }
+  }
+
+  if (lastError) {
+    const message = lastError instanceof Error ? lastError.message : String(lastError);
+    throw new Error(`OKX BTC index ticker unavailable: ${message}`);
   }
 
   return null;
@@ -174,9 +188,9 @@ function computeRiskFlags(contract: {
   otmPct: number | null;
   dte: number;
   updatedAt: number | null;
-}): RiskFlag[] {
+}, now = Date.now()): RiskFlag[] {
   const flags: RiskFlag[] = [];
-  const ageMs = contract.updatedAt ? Date.now() - contract.updatedAt : null;
+  const ageMs = contract.updatedAt ? now - contract.updatedAt : null;
 
   if (!contract.bidPx) flags.push("NO_BID");
   if (!contract.askPx) flags.push("NO_ASK");
@@ -185,7 +199,7 @@ function computeRiskFlags(contract: {
   if ((contract.volume24h ?? 0) < 10) flags.push("LOW_VOLUME");
   if (contract.otmPct !== null && Math.abs(contract.otmPct) < 0.03) flags.push("NEAR_ATM");
   if (contract.dte < 1) flags.push("SHORT_DTE");
-  if (ageMs !== null && ageMs > 30_000) flags.push("STALE_QUOTE");
+  if (ageMs !== null && ageMs > STALE_QUOTE_AFTER_MS) flags.push("STALE_QUOTE");
 
   return flags;
 }
@@ -211,6 +225,50 @@ function computeScore(contract: {
   return aprScore + otmScore + liquidityScore + volumeScore - spreadPenalty - riskPenalty;
 }
 
+function breakevenPx(side: "C" | "P", strike: number, bidPx: number | null): number | null {
+  if (bidPx === null) {
+    return null;
+  }
+
+  if (side === "P") {
+    return strike / (1 + bidPx);
+  }
+
+  return bidPx < 1 ? strike / (1 - bidPx) : null;
+}
+
+export function refreshOptionRuntimeState(option: OptionContract, now = Date.now()): OptionContract {
+  const riskFlags = computeRiskFlags(
+    {
+      bidPx: option.bidPx,
+      askPx: option.askPx,
+      spreadPct: option.spreadPct,
+      openInterest: option.openInterest,
+      volume24h: option.volume24h,
+      otmPct: option.otmPct,
+      dte: option.dte,
+      updatedAt: option.updatedAt
+    },
+    now
+  );
+  const score = computeScore({
+    side: option.side,
+    cashSecuredApr: option.cashSecuredApr,
+    coveredCallApr: option.coveredCallApr,
+    otmPct: option.otmPct,
+    spreadPct: option.spreadPct,
+    openInterestUsd: option.openInterestUsd,
+    volume24h: option.volume24h,
+    riskFlags
+  });
+
+  return {
+    ...option,
+    riskFlags,
+    score
+  };
+}
+
 function buildSnapshot(params: {
   instruments: OkxInstrument[];
   tickers: OkxTicker[];
@@ -224,6 +282,10 @@ function buildSnapshot(params: {
   const interestById = new Map(params.interests.map((interest) => [interest.instId, interest]));
 
   const btcIndexPx = toPositiveNumber(params.indexTicker?.idxPx) ?? null;
+  if (btcIndexPx === null) {
+    throw new Error("OKX BTC index ticker missing index price");
+  }
+
   const btcOpen24h = toPositiveNumber(params.indexTicker?.open24h) ?? null;
   const btcChange24hPct =
     btcIndexPx !== null && btcOpen24h !== null ? (btcIndexPx - btcOpen24h) / btcOpen24h : null;
@@ -240,7 +302,7 @@ function buildSnapshot(params: {
       const quoteTs =
         toNumber(ticker?.ts) ?? toNumber(summary?.ts) ?? toNumber(interest?.ts) ?? null;
 
-      if (!strike || !expiryMs || !btcIndexPx) {
+      if (!strike || !expiryMs) {
         return null;
       }
 
@@ -269,12 +331,7 @@ function buildSnapshot(params: {
       const fwdPx = toPositiveNumber(summary?.fwdPx) ?? btcIndexPx;
       const otmPct =
         instrument.optType === "P" ? (fwdPx - strike) / fwdPx : (strike - fwdPx) / fwdPx;
-      const breakeven =
-        premiumUsdPerBtc === null
-          ? null
-          : instrument.optType === "P"
-            ? strike - premiumUsdPerBtc
-            : strike + premiumUsdPerBtc;
+      const breakeven = breakevenPx(instrument.optType, strike, bidPx);
       const computedSpreadPct = spreadPct(bidPx, askPx);
       const openInterest = toNumber(interest?.oi);
       const volume24h = toNumber(ticker?.vol24h);
@@ -288,7 +345,7 @@ function buildSnapshot(params: {
         dte,
         updatedAt: quoteTs
       };
-      const riskFlags = computeRiskFlags(partial);
+      const riskFlags = computeRiskFlags(partial, now);
       const openInterestUsd = toNumber(interest?.oiUsd);
 
       const { expiry, expiryLabel } = formatExpiry(expiryMs);

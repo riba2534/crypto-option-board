@@ -73,6 +73,12 @@ button {
   cursor: pointer;
 }
 
+button:focus-visible,
+input:focus-visible {
+  outline: 2px solid var(--blue);
+  outline-offset: 2px;
+}
+
 .shell {
   min-height: 100vh;
   padding: 18px;
@@ -217,6 +223,10 @@ h1 {
 
 .down {
   color: var(--red) !important;
+}
+
+.neutral {
+  color: var(--muted) !important;
 }
 
 .status.ok strong {
@@ -562,8 +572,17 @@ input[type="range"] {
 
 .heat.selected,
 .table-row.active {
-  outline: 2px solid var(--green);
-  outline-offset: 1px;
+  border-color: var(--green);
+}
+
+.heat.selected::after,
+.table-row.active::after {
+  position: absolute;
+  inset: 0;
+  border: 2px solid var(--green);
+  border-radius: inherit;
+  content: "";
+  pointer-events: none;
 }
 
 .contracts-table {
@@ -587,6 +606,7 @@ input[type="range"] {
 }
 
 .table-row {
+  position: relative;
   width: 100%;
   min-height: 58px;
   margin-bottom: 7px;
@@ -843,7 +863,7 @@ input[type="range"] {
   font-size: 13px;
 }
 
-@media (max-width: 1260px) {
+@media (max-width: 1320px) {
   .topbar,
   .workspace {
     grid-template-columns: 1fr;
@@ -913,6 +933,12 @@ input[type="range"] {
     font-size: 17px;
   }
 
+  .theme-toggle {
+    width: 44px;
+    height: 44px;
+    flex-basis: 44px;
+  }
+
   .workspace,
   .metric-grid,
   .greeks {
@@ -951,7 +977,7 @@ input[type="range"] {
   }
 
   .segmented button {
-    min-height: 32px;
+    min-height: 44px;
   }
 
   .expiry-list {
@@ -965,7 +991,7 @@ input[type="range"] {
 
   .expiry-list button {
     min-width: 72px;
-    min-height: 40px;
+    min-height: 44px;
     padding: 6px 8px;
   }
 

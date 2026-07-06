@@ -7,6 +7,7 @@ import {
   ArrowUpRight,
   Clock3,
   Filter,
+  Minus,
   Moon,
   RefreshCw,
   ShieldAlert,
@@ -208,7 +209,11 @@ export function Dashboard({ initialSnapshot }: DashboardProps) {
   }, []);
 
   useEffect(() => {
-    if (expiry === "ALL" && snapshot.expiries.length > 0) {
+    if (
+      expiry !== "ALL" &&
+      snapshot.expiries.length > 0 &&
+      !snapshot.expiries.some((item) => item.expiry === expiry)
+    ) {
       setExpiry(nearestExpiry(snapshot));
     }
   }, [expiry, snapshot.expiries]);
@@ -220,10 +225,14 @@ export function Dashboard({ initialSnapshot }: DashboardProps) {
       .filter((option) => side === "ALL" || option.side === side)
       .filter((option) => expiry === "ALL" || option.expiry === expiry)
       .filter((option) => (optionApr(option) ?? -1) >= minApr / 100)
-      .filter((option) => option.spreadPct === null || option.spreadPct <= maxSpread / 100)
+      .filter((option) => option.spreadPct !== null && option.spreadPct <= maxSpread / 100)
       .filter((option) => {
         if (!hideIlliquid) return true;
-        return !option.riskFlags.includes("NO_BID") && !option.riskFlags.includes("LOW_OI");
+        return (
+          !option.riskFlags.includes("NO_BID") &&
+          !option.riskFlags.includes("NO_ASK") &&
+          !option.riskFlags.includes("LOW_OI")
+        );
       });
   }, [expiry, hideIlliquid, maxSpread, minApr, side, snapshot.options]);
 
@@ -236,24 +245,18 @@ export function Dashboard({ initialSnapshot }: DashboardProps) {
       return;
     }
 
-    setSelectedId(candidates[0]?.instId ?? filteredOptions[0]?.instId ?? snapshot.options[0]?.instId ?? null);
-  }, [candidates, filteredOptions, selectedId, snapshot.options]);
+    setSelectedId(candidates[0]?.instId ?? filteredOptions[0]?.instId ?? null);
+  }, [candidates, filteredOptions, selectedId]);
 
   const selected = useMemo(() => {
-    return (
-      snapshot.options.find((option) => option.instId === selectedId) ??
-      candidates[0] ??
-      snapshot.options[0] ??
-      null
-    );
-  }, [candidates, selectedId, snapshot.options]);
+    return filteredOptions.find((option) => option.instId === selectedId) ?? null;
+  }, [filteredOptions, selectedId]);
 
   const heatmap = useMemo(() => {
     const byExpiry = new Map<string, OptionContract[]>();
-    const scope = snapshot.options.filter((option) => side === "ALL" || option.side === side);
     const activeExpiries = expiry === "ALL" ? expiries.slice(0, 8).map((item) => item.expiry) : [expiry];
 
-    for (const item of scope) {
+    for (const item of filteredOptions) {
       if (!activeExpiries.includes(item.expiry)) continue;
       const list = byExpiry.get(item.expiry) ?? [];
       list.push(item);
@@ -270,7 +273,7 @@ export function Dashboard({ initialSnapshot }: DashboardProps) {
           .sort((a, b) => a.strike - b.strike)
       }))
       .filter((row) => row.contracts.length > 0);
-  }, [expiries, expiry, side, snapshot.expiries, snapshot.options]);
+  }, [expiries, expiry, filteredOptions, snapshot.expiries]);
 
   const putCallOi = useMemo(() => {
     const puts = snapshot.options
@@ -282,6 +285,9 @@ export function Dashboard({ initialSnapshot }: DashboardProps) {
     const total = puts + calls || 1;
     return { puts, calls, putPct: puts / total, callPct: calls / total };
   }, [snapshot.options]);
+  const btcChange = snapshot.btcChange24hPct;
+  const btcChangeClass =
+    btcChange === null || btcChange === undefined ? "neutral" : btcChange > 0 ? "up" : btcChange < 0 ? "down" : "neutral";
 
   return (
     <main className="shell">
@@ -309,13 +315,15 @@ export function Dashboard({ initialSnapshot }: DashboardProps) {
           <div className="market-tile primary">
             <span>BTC Index</span>
             <strong>{money(snapshot.btcIndexPx)}</strong>
-            <em className={snapshot.btcChange24hPct && snapshot.btcChange24hPct >= 0 ? "up" : "down"}>
-              {snapshot.btcChange24hPct && snapshot.btcChange24hPct >= 0 ? (
+            <em className={btcChangeClass}>
+              {btcChangeClass === "up" ? (
                 <ArrowUpRight size={14} />
-              ) : (
+              ) : btcChangeClass === "down" ? (
                 <ArrowDownRight size={14} />
+              ) : (
+                <Minus size={14} />
               )}
-              {pct(snapshot.btcChange24hPct)}
+              {pct(btcChange)}
             </em>
           </div>
           <div className="market-tile">
@@ -348,14 +356,29 @@ export function Dashboard({ initialSnapshot }: DashboardProps) {
 
           <div className="field side-field">
             <label>方向</label>
-            <div className="segmented">
-              <button className={side === "P" ? "active" : ""} onClick={() => setSide("P")}>
+            <div className="segmented" role="group" aria-label="期权方向">
+              <button
+                type="button"
+                aria-pressed={side === "P"}
+                className={side === "P" ? "active" : ""}
+                onClick={() => setSide("P")}
+              >
                 Put
               </button>
-              <button className={side === "C" ? "active" : ""} onClick={() => setSide("C")}>
+              <button
+                type="button"
+                aria-pressed={side === "C"}
+                className={side === "C" ? "active" : ""}
+                onClick={() => setSide("C")}
+              >
                 Call
               </button>
-              <button className={side === "ALL" ? "active" : ""} onClick={() => setSide("ALL")}>
+              <button
+                type="button"
+                aria-pressed={side === "ALL"}
+                className={side === "ALL" ? "active" : ""}
+                onClick={() => setSide("ALL")}
+              >
                 Both
               </button>
             </div>
@@ -363,17 +386,37 @@ export function Dashboard({ initialSnapshot }: DashboardProps) {
 
           <div className="field metric-field">
             <label>指标</label>
-            <div className="segmented vertical">
-              <button className={metric === "apr" ? "active" : ""} onClick={() => setMetric("apr")}>
+            <div className="segmented vertical" role="group" aria-label="矩阵指标">
+              <button
+                type="button"
+                aria-pressed={metric === "apr"}
+                className={metric === "apr" ? "active" : ""}
+                onClick={() => setMetric("apr")}
+              >
                 APR
               </button>
-              <button className={metric === "iv" ? "active" : ""} onClick={() => setMetric("iv")}>
+              <button
+                type="button"
+                aria-pressed={metric === "iv"}
+                className={metric === "iv" ? "active" : ""}
+                onClick={() => setMetric("iv")}
+              >
                 IV
               </button>
-              <button className={metric === "delta" ? "active" : ""} onClick={() => setMetric("delta")}>
+              <button
+                type="button"
+                aria-pressed={metric === "delta"}
+                className={metric === "delta" ? "active" : ""}
+                onClick={() => setMetric("delta")}
+              >
                 Delta
               </button>
-              <button className={metric === "oi" ? "active" : ""} onClick={() => setMetric("oi")}>
+              <button
+                type="button"
+                aria-pressed={metric === "oi"}
+                className={metric === "oi" ? "active" : ""}
+                onClick={() => setMetric("oi")}
+              >
                 OI
               </button>
             </div>
@@ -381,13 +424,20 @@ export function Dashboard({ initialSnapshot }: DashboardProps) {
 
           <div className="field expiry-field">
             <label>到期日</label>
-            <div className="expiry-list">
-              <button className={expiry === "ALL" ? "active" : ""} onClick={() => setExpiry("ALL")}>
+            <div className="expiry-list" role="group" aria-label="到期日">
+              <button
+                type="button"
+                aria-pressed={expiry === "ALL"}
+                className={expiry === "ALL" ? "active" : ""}
+                onClick={() => setExpiry("ALL")}
+              >
                 All
               </button>
               {expiries.map((item) => (
                 <button
                   key={item.expiry}
+                  type="button"
+                  aria-pressed={expiry === item.expiry}
                   className={expiry === item.expiry ? "active" : ""}
                   onClick={() => setExpiry(item.expiry)}
                 >
@@ -445,6 +495,8 @@ export function Dashboard({ initialSnapshot }: DashboardProps) {
             {expiries.slice(0, 8).map((item) => (
               <button
                 key={item.expiry}
+                type="button"
+                aria-pressed={expiry === item.expiry}
                 className={expiry === item.expiry ? "expiry-card active" : "expiry-card"}
                 onClick={() => setExpiry(item.expiry)}
               >
@@ -482,6 +534,9 @@ export function Dashboard({ initialSnapshot }: DashboardProps) {
                       {row.contracts.map((option) => (
                         <button
                           key={option.instId}
+                          type="button"
+                          aria-pressed={option.instId === selected?.instId}
+                          aria-label={`${option.instId} ${displayMetric(option, metric)}`}
                           className={`${metricClass(option, metric)} ${
                             option.instId === selected?.instId ? "selected" : ""
                           }`}
@@ -522,6 +577,8 @@ export function Dashboard({ initialSnapshot }: DashboardProps) {
               {candidates.map((option) => (
                 <button
                   key={option.instId}
+                  type="button"
+                  aria-pressed={option.instId === selected?.instId}
                   className={option.instId === selected?.instId ? "table-row active" : "table-row"}
                   onClick={() => setSelectedId(option.instId)}
                 >
@@ -543,7 +600,7 @@ export function Dashboard({ initialSnapshot }: DashboardProps) {
                   </span>
                   <span>{money(option.openInterestUsd, true)}</span>
                   <span className="flag-list">
-                    {option.riskFlags.slice(0, 2).map((flag) => (
+                    {option.riskFlags.map((flag) => (
                       <i key={flag}>{riskLabel[flag]}</i>
                     ))}
                   </span>
