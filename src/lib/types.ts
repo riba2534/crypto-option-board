@@ -93,8 +93,8 @@ export interface OptionSnapshot {
 export type FuturesContractType = "PERPETUAL" | "CURRENT_QUARTER" | "NEXT_QUARTER";
 
 export interface FuturesCurvePoint {
-  exchange: "BINANCE";
-  pair: "BTCUSDT";
+  exchange: string;
+  pair: string;
   symbol: string;
   contractType: FuturesContractType;
   label: string;

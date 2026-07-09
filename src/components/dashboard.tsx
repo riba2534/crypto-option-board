@@ -282,7 +282,7 @@ export function Dashboard({ initialSnapshot }: DashboardProps) {
           setFuturesSnapshot(next);
         }
       } catch {
-        // The futures tab keeps the previous SQLite snapshot if Binance is temporarily unavailable.
+        // The futures tab keeps the previous SQLite snapshot if OKX is temporarily unavailable.
       }
     }
 
@@ -868,7 +868,7 @@ function FuturesWorkspace({ snapshot }: { snapshot: FuturesBasisSnapshot | null 
           <em className={status}>{status.toUpperCase()} · {snapshotAge(snapshot?.ageMs)}</em>
         </div>
         <div className="basis-metrics">
-          <Metric label="Binance Index" value={money(snapshot?.indexPx)} strong />
+          <Metric label="OKX Index" value={money(snapshot?.indexPx)} strong />
           <Metric label="Perp Premium" value={signedPct(perp?.basisPct)} />
           <Metric label="Funding 年化" value={signedPct(perp?.annualizedFunding)} />
           <Metric label="Curve Steepness" value={signedPct(steepness)} />
@@ -884,10 +884,10 @@ function FuturesWorkspace({ snapshot }: { snapshot: FuturesBasisSnapshot | null 
               <LineChart size={17} />
               Basis Curve
             </span>
-            <em>Binance USDⓈ-M</em>
+            <em>OKX BTC-USD</em>
           </div>
           {curve.length === 0 ? (
-            <div className="empty-state">等待 Binance 期货数据</div>
+            <div className="empty-state">等待 OKX 期货数据</div>
           ) : (
             <div className="basis-curve">
               {curve.map((point) => {

@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { getFuturesBasisHealth } from "@/lib/server/binance-basis-cache";
+import { getFuturesBasisHealth } from "@/lib/server/futures-basis-cache";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;

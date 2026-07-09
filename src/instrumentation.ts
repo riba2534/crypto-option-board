@@ -3,6 +3,6 @@ export async function register() {
     return;
   }
 
-  const { startBinanceBasisCollector } = await import("@/lib/server/binance-basis-cache");
-  startBinanceBasisCollector();
+  const { startFuturesBasisCollector } = await import("@/lib/server/futures-basis-cache");
+  startFuturesBasisCollector();
 }

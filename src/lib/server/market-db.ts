@@ -18,8 +18,8 @@ interface DbState {
 
 interface StoredFuturesBasisRow {
   ts: number;
-  exchange: "BINANCE";
-  pair: "BTCUSDT";
+  exchange: string;
+  pair: string;
   symbol: string;
   contract_type: FuturesContractType;
   label: string;
@@ -162,10 +162,10 @@ export function getMarketDb() {
 
 export function saveMarketInstruments(
   instruments: Array<{
-    exchange: "BINANCE";
+    exchange: string;
     symbol: string;
-    pair: "BTCUSDT";
-    marketType: "FUTURES";
+    pair: string;
+    marketType: string;
     contractType: FuturesContractType;
     baseAsset: string;
     quoteAsset: string;
@@ -364,7 +364,7 @@ export function readStoredFuturesBasisSnapshot(historyHours = DEFAULT_HISTORY_HO
     refreshedAt: latest.ts,
     nextRefreshAt: null,
     ageMs: now - latest.ts,
-    source: "binance-usdm-sqlite",
+    source: "okx-usd-sqlite",
     error: null,
     dbPath: getMarketDbPath(),
     indexPx: curve.find((point) => point.indexPx !== null)?.indexPx ?? null,
