@@ -57,9 +57,12 @@ interface FundingRow {
 }
 
 async function loadStats(): Promise<FuturesMarketStats> {
-  const [takerRows, ratioRows, liquidationGroups, fundingRows] = await Promise.all([
+  const [takerRows, ratioRows, topTraderRows, liquidationGroups, fundingRows] = await Promise.all([
     fetchOkx<string[]>("/api/v5/rubik/stat/taker-volume?ccy=BTC&instType=CONTRACTS&period=1H"),
     fetchOkx<string[]>("/api/v5/rubik/stat/contracts/long-short-account-ratio?ccy=BTC&period=1H"),
+    fetchOkx<string[]>(
+      "/api/v5/rubik/stat/contracts/long-short-position-ratio-contract-top-trader?instId=BTC-USDT-SWAP&period=1H"
+    ),
     fetchOkx<LiquidationGroup>("/api/v5/public/liquidation-orders?instType=SWAP&uly=BTC-USD&state=filled&limit=100"),
     fetchOkx<FundingRow>("/api/v5/public/funding-rate-history?instId=BTC-USD-SWAP&limit=30")
   ]);
@@ -97,6 +100,7 @@ async function loadStats(): Promise<FuturesMarketStats> {
     takerSellVolume24h,
     takerImbalance24h: takerTotal > 0 ? (takerBuyVolume24h - takerSellVolume24h) / takerTotal : null,
     longShortAccountRatio: toNumber(ratioRows[0]?.[1]),
+    topTraderLongShortRatio: toNumber(topTraderRows[0]?.[1]),
     longLiquidations24hUsd,
     shortLiquidations24hUsd,
     lastRealizedFundingRate: realized[0]?.rate ?? null,

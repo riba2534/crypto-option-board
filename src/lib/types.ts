@@ -144,6 +144,7 @@ export interface FuturesMarketStats {
   takerSellVolume24h: number | null;
   takerImbalance24h: number | null;
   longShortAccountRatio: number | null;
+  topTraderLongShortRatio: number | null;
   longLiquidations24hUsd: number | null;
   shortLiquidations24hUsd: number | null;
   lastRealizedFundingRate: number | null;
@@ -165,4 +166,5 @@ export interface FuturesBasisSnapshot {
   curve: FuturesCurvePoint[];
   history: FuturesBasisHistoryPoint[];
   marketStats: FuturesMarketStats | null;
+  binanceMarketStats: FuturesMarketStats | null;
 }

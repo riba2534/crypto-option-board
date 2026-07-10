@@ -2649,24 +2649,51 @@ h1 {
   font-size: 11px;
 }
 
-.position-stat-grid {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 6px;
-  margin-bottom: 18px;
-}
-
-.position-stat-grid .metric {
-  min-width: 0;
-  padding: 10px;
+.exchange-compare {
+  overflow: hidden;
   border: 1px solid var(--line);
   border-radius: 3px;
   background: var(--control);
 }
 
-.position-stat-grid .metric strong {
-  margin-top: 5px;
-  font-size: 16px;
+.compare-row {
+  display: grid;
+  grid-template-columns: 1.4fr 1fr 1fr;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-top: 1px solid var(--line);
+}
+
+.compare-row:first-child {
+  border-top: 0;
+}
+
+.compare-row > span:first-child {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 800;
+}
+
+.compare-row strong {
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.compare-head {
+  background: var(--surface-strong);
+}
+
+.compare-head span {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.05em;
+}
+
+.compare-head span:not(:first-child) {
+  text-align: right;
 }
 
 .pressure-block {
@@ -2973,8 +3000,8 @@ h1 {
     margin: 10px;
   }
 
-  .position-stat-grid {
-    margin: 10px 10px 18px;
+  .exchange-compare {
+    margin: 10px 10px 0;
   }
 
   .pressure-block {

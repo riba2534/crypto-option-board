@@ -153,6 +153,20 @@ export function getMarketDb() {
       finished_at INTEGER NOT NULL,
       error TEXT
     );
+
+    CREATE TABLE IF NOT EXISTS futures_liquidations (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      exchange TEXT NOT NULL,
+      ts INTEGER NOT NULL,
+      symbol TEXT NOT NULL,
+      side TEXT NOT NULL,
+      price REAL,
+      qty REAL,
+      notional_usd REAL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_futures_liquidations_ts
+      ON futures_liquidations(exchange, ts DESC);
   `);
 
   state.db = db;
@@ -270,6 +284,90 @@ export function saveFuturesBasisSnapshot(curve: FuturesCurvePoint[], rawBySymbol
   }
 }
 
+export function recordFuturesLiquidation(event: {
+  exchange: string;
+  ts: number;
+  symbol: string;
+  side: "long" | "short";
+  price: number | null;
+  qty: number | null;
+  notionalUsd: number | null;
+}) {
+  const db = getMarketDb();
+  db.prepare(
+    "INSERT INTO futures_liquidations (exchange, ts, symbol, side, price, qty, notional_usd) VALUES (?, ?, ?, ?, ?, ?, ?)"
+  ).run(event.exchange, event.ts, event.symbol, event.side, event.price, event.qty, event.notionalUsd);
+  db.prepare("DELETE FROM futures_liquidations WHERE ts < ?").run(Date.now() - getRetentionMs());
+}
+
+export function readFuturesLiquidationTotals(exchange: string, hours: number) {
+  const db = getMarketDb();
+  const since = Date.now() - hours * 60 * 60 * 1000;
+  const rows = db
+    .prepare(
+      `SELECT side, SUM(notional_usd) AS total FROM futures_liquidations
+       WHERE exchange = ? AND ts >= ? GROUP BY side`
+    )
+    .all(exchange, since) as unknown as Array<{ side: string; total: number | null }>;
+  return {
+    longUsd: rows.find((row) => row.side === "long")?.total ?? 0,
+    shortUsd: rows.find((row) => row.side === "short")?.total ?? 0
+  };
+}
+
+export function getEarliestFuturesSymbolTs(exchange: string, symbol: string): number | null {
+  const row = getMarketDb()
+    .prepare("SELECT MIN(ts) AS ts FROM futures_basis_snapshots WHERE exchange = ? AND symbol = ?")
+    .get(exchange, symbol) as { ts: number | null } | undefined;
+  return row?.ts ?? null;
+}
+
+export function insertFuturesBasisBackfill(
+  rows: Array<{
+    ts: number;
+    exchange: string;
+    pair: string;
+    symbol: string;
+    contractType: FuturesContractType;
+    label: string;
+    indexPx: number | null;
+    openInterest: number | null;
+  }>
+) {
+  if (rows.length === 0) return;
+  const db = getMarketDb();
+  const stmt = db.prepare(`
+    INSERT INTO futures_basis_snapshots (
+      ts, exchange, pair, symbol, contract_type, label, expiry_ts, dte_days,
+      index_px, mark_px, basis_abs, basis_pct, annualized_basis,
+      funding_rate, annualized_funding, next_funding_time, open_interest,
+      volume_24h, quote_volume_24h, source_ts, raw_json
+    )
+    VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, ?, NULL, NULL, NULL, NULL, NULL, NULL, NULL, ?, NULL, NULL, ?, '{}')
+  `);
+
+  db.exec("BEGIN");
+  try {
+    for (const row of rows) {
+      stmt.run(
+        row.ts,
+        row.exchange,
+        row.pair,
+        row.symbol,
+        row.contractType,
+        row.label,
+        row.indexPx,
+        row.openInterest,
+        row.ts
+      );
+    }
+    db.exec("COMMIT");
+  } catch (error) {
+    db.exec("ROLLBACK");
+    throw error;
+  }
+}
+
 export function recordCollectorRun(source: string, status: "ok" | "error", startedAt: number, error: string | null) {
   getMarketDb()
     .prepare(
@@ -378,12 +476,13 @@ export function readStoredFuturesBasisSnapshot(historyHours = DEFAULT_HISTORY_HO
     refreshedAt: latest.ts,
     nextRefreshAt: null,
     ageMs: now - latest.ts,
-    source: "okx-usd-sqlite",
+    source: "sqlite",
     error: null,
     dbPath: getMarketDbPath(),
     indexPx: curve.find((point) => point.indexPx !== null)?.indexPx ?? null,
     curve,
     history: historyRows.map(rowToHistoryPoint),
-    marketStats: null
+    marketStats: null,
+    binanceMarketStats: null
   };
 }

@@ -215,7 +215,7 @@ function formatDateTime(value: number | null | undefined) {
 }
 
 function tenorLabel(point: FuturesCurvePoint) {
-  if (point.contractType === "PERPETUAL") return "永续";
+  if (point.contractType === "PERPETUAL") return point.label;
   if (point.dte === null) return point.label;
   return `${point.label} · ${point.dte.toFixed(0)}D`;
 }
@@ -1162,20 +1162,36 @@ function fundingCountdown(value: number | null | undefined) {
   return `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
 }
 
+// Compare each perp against its own history and only sum symbols that have data
+// at both endpoints; otherwise a newly listed feed (e.g. an exchange added today)
+// would fake a massive OI jump against a baseline that never contained it.
 function aggregatePerpOiChange(history: FuturesBasisHistoryPoint[], hours: number) {
-  const buckets = new Map<number, number>();
+  const bySymbol = new Map<string, Array<{ ts: number; oi: number }>>();
   for (const point of history) {
     if (point.contractType !== "PERPETUAL" || point.openInterest === null) continue;
-    buckets.set(point.ts, (buckets.get(point.ts) ?? 0) + point.openInterest);
+    const rows = bySymbol.get(point.symbol) ?? [];
+    rows.push({ ts: point.ts, oi: point.openInterest });
+    bySymbol.set(point.symbol, rows);
   }
-  const rows = [...buckets.entries()].sort((a, b) => a[0] - b[0]);
-  if (rows.length < 2) return null;
-  const latest = rows[rows.length - 1];
-  const targetTs = latest[0] - hours * 60 * 60 * 1000;
-  const past = rows.reduce((nearest, row) =>
-    Math.abs(row[0] - targetTs) < Math.abs(nearest[0] - targetTs) ? row : nearest
-  );
-  return past[1] > 0 ? latest[1] / past[1] - 1 : null;
+  const windowMs = hours * 60 * 60 * 1000;
+  const toleranceMs = Math.min(windowMs / 4, 60 * 60 * 1000);
+  let latestSum = 0;
+  let pastSum = 0;
+  let matched = 0;
+  for (const rows of bySymbol.values()) {
+    if (rows.length < 2) continue;
+    rows.sort((a, b) => a.ts - b.ts);
+    const latest = rows[rows.length - 1];
+    const targetTs = latest.ts - windowMs;
+    const past = rows.reduce((nearest, row) =>
+      Math.abs(row.ts - targetTs) < Math.abs(nearest.ts - targetTs) ? row : nearest
+    );
+    if (Math.abs(past.ts - targetTs) > toleranceMs || past.oi <= 0) continue;
+    latestSum += latest.oi;
+    pastSum += past.oi;
+    matched += 1;
+  }
+  return matched > 0 && pastSum > 0 ? latestSum / pastSum - 1 : null;
 }
 
 function futuresRegime(priceChange: number | null, oiChange: number | null) {
@@ -1198,8 +1214,11 @@ function FuturesWorkspace({ snapshot }: { snapshot: FuturesBasisSnapshot | null 
   const curve = snapshot?.curve ?? [];
   const history = snapshot?.history ?? [];
   const stats = snapshot?.marketStats ?? null;
+  const binanceStats = snapshot?.binanceMarketStats ?? null;
   const perps = curve.filter((point) => point.contractType === "PERPETUAL");
-  const dated = curve.filter((point) => point.contractType !== "PERPETUAL");
+  // The term-structure panel stays OKX-only: OKX carries 6 tenors while Binance
+  // only lists two quarterlies, which would garble the curve shape.
+  const dated = curve.filter((point) => point.contractType !== "PERPETUAL" && point.exchange === "OKX");
   const primaryPerp = perps.find((point) => point.symbol === "BTC-USDT-SWAP") ?? perps[0] ?? null;
   const fundingPerp = perps.find((point) => point.symbol === "BTC-USD-SWAP") ?? primaryPerp;
   const currentQuarter = dated.find((point) => point.contractType === "CURRENT_QUARTER") ?? null;
@@ -1208,16 +1227,20 @@ function FuturesWorkspace({ snapshot }: { snapshot: FuturesBasisSnapshot | null 
   const oiChange24h = aggregatePerpOiChange(history, 24);
   const priceChange24h = primaryPerp?.change24hPct ?? null;
   const regime = futuresRegime(priceChange24h, oiChange24h);
-  const liquidationTotal =
+  const okxLiquidationTotal =
     (stats?.longLiquidations24hUsd ?? 0) + (stats?.shortLiquidations24hUsd ?? 0);
-  const longLiquidationShare = liquidationTotal > 0
-    ? ((stats?.longLiquidations24hUsd ?? 0) / liquidationTotal) * 100
-    : 50;
-  const takerTotal = (stats?.takerBuyVolume24h ?? 0) + (stats?.takerSellVolume24h ?? 0);
-  const takerBuyShare = takerTotal > 0 ? ((stats?.takerBuyVolume24h ?? 0) / takerTotal) * 100 : 50;
-  const longAccountShare = stats?.longShortAccountRatio
-    ? (stats.longShortAccountRatio / (1 + stats.longShortAccountRatio)) * 100
-    : 50;
+  const binanceLiquidationTotal =
+    (binanceStats?.longLiquidations24hUsd ?? 0) + (binanceStats?.shortLiquidations24hUsd ?? 0);
+  const longLiquidations =
+    (stats?.longLiquidations24hUsd ?? 0) + (binanceStats?.longLiquidations24hUsd ?? 0);
+  const shortLiquidations =
+    (stats?.shortLiquidations24hUsd ?? 0) + (binanceStats?.shortLiquidations24hUsd ?? 0);
+  const liquidationTotal = longLiquidations + shortLiquidations;
+  const longLiquidationShare = liquidationTotal > 0 ? (longLiquidations / liquidationTotal) * 100 : 50;
+  const heroTakerBuy = (stats?.takerBuyVolume24h ?? 0) + (binanceStats?.takerBuyVolume24h ?? 0);
+  const heroTakerSell = (stats?.takerSellVolume24h ?? 0) + (binanceStats?.takerSellVolume24h ?? 0);
+  const heroTakerTotal = heroTakerBuy + heroTakerSell;
+  const heroTakerImbalance = heroTakerTotal > 0 ? (heroTakerBuy - heroTakerSell) / heroTakerTotal : null;
   const datedBasis = dated
     .map((point) => point.annualizedBasis)
     .filter((value): value is number => value !== null && Number.isFinite(value));
@@ -1238,7 +1261,7 @@ function FuturesWorkspace({ snapshot }: { snapshot: FuturesBasisSnapshot | null 
         <div className="futures-hero">
           <div className="futures-hero-copy">
             <div className="futures-kicker">
-              <span>OKX · BTC DERIVATIVES</span>
+              <span>OKX + BINANCE · BTC DERIVATIVES</span>
               <em className={status}>{status.toUpperCase()} · {snapshotAge(snapshot?.ageMs)}</em>
             </div>
             <h2>杠杆、拥挤度与 Carry</h2>
@@ -1261,17 +1284,17 @@ function FuturesWorkspace({ snapshot }: { snapshot: FuturesBasisSnapshot | null 
             <article className="futures-kpi">
               <span>永续 OI</span>
               <strong>{money(totalPerpOiUsd || null, true)}</strong>
-              <em className={basisTone(oiChange24h)}>24h {signedPct(oiChange24h)} · 币本位 + U 本位</em>
+              <em className={basisTone(oiChange24h)}>24h {signedPct(oiChange24h)} · OKX + Binance 永续</em>
             </article>
             <article className="futures-kpi">
               <span>主动成交差</span>
-              <strong className={basisTone(stats?.takerImbalance24h)}>{signedPct(stats?.takerImbalance24h)}</strong>
-              <em>买 {money(stats?.takerBuyVolume24h, true)} / 卖 {money(stats?.takerSellVolume24h, true)}</em>
+              <strong className={basisTone(heroTakerImbalance)}>{signedPct(heroTakerImbalance)}</strong>
+              <em>买 {money(heroTakerBuy || null, true)} / 卖 {money(heroTakerSell || null, true)} · 双所</em>
             </article>
             <article className="futures-kpi">
               <span>已报告爆仓</span>
               <strong>{money(liquidationTotal || null, true)}</strong>
-              <em>多 {money(stats?.longLiquidations24hUsd, true)} / 空 {money(stats?.shortLiquidations24hUsd, true)}</em>
+              <em>多 {money(longLiquidations || null, true)} / 空 {money(shortLiquidations || null, true)} · 双所</em>
             </article>
           </div>
         </div>
@@ -1303,28 +1326,54 @@ function FuturesWorkspace({ snapshot }: { snapshot: FuturesBasisSnapshot | null 
             <em>24H WINDOW</em>
           </div>
 
-          <div className="position-stat-grid">
-            <Metric label="上期已结 Funding" value={signedPct(stats?.lastRealizedFundingRate, 4)} />
-            <Metric label="24h 累计 Funding" value={signedPct(stats?.fundingSum24h, 4)} />
-            <Metric label="7d 单期平均" value={signedPct(stats?.fundingAverage7d, 4)} />
-            <Metric label="季度曲线斜率" value={signedPct(steepness)} />
+          <div className="exchange-compare">
+            <div className="compare-row compare-head">
+              <span>指标 · 24H</span><span>OKX</span><span>Binance</span>
+            </div>
+            <div className="compare-row">
+              <span>主动成交差</span>
+              <strong className={basisTone(stats?.takerImbalance24h)}>{signedPct(stats?.takerImbalance24h)}</strong>
+              <strong className={basisTone(binanceStats?.takerImbalance24h)}>{signedPct(binanceStats?.takerImbalance24h)}</strong>
+            </div>
+            <div className="compare-row">
+              <span>多空账户比 L/S</span>
+              <strong>{fmt(stats?.longShortAccountRatio, 2)}</strong>
+              <strong>{fmt(binanceStats?.longShortAccountRatio, 2)}</strong>
+            </div>
+            <div className="compare-row">
+              <span>大户持仓比 L/S</span>
+              <strong>{fmt(stats?.topTraderLongShortRatio, 2)}</strong>
+              <strong>{fmt(binanceStats?.topTraderLongShortRatio, 2)}</strong>
+            </div>
+            <div className="compare-row">
+              <span>24h 已报告爆仓</span>
+              <strong>{money(okxLiquidationTotal || null, true)}</strong>
+              <strong>{money(binanceLiquidationTotal || null, true)}</strong>
+            </div>
+            <div className="compare-row">
+              <span>上期已结 Funding</span>
+              <strong className={basisTone(stats?.lastRealizedFundingRate)}>{signedPct(stats?.lastRealizedFundingRate, 4)}</strong>
+              <strong className={basisTone(binanceStats?.lastRealizedFundingRate)}>{signedPct(binanceStats?.lastRealizedFundingRate, 4)}</strong>
+            </div>
+            <div className="compare-row">
+              <span>24h 累计 Funding</span>
+              <strong className={basisTone(stats?.fundingSum24h)}>{signedPct(stats?.fundingSum24h, 4)}</strong>
+              <strong className={basisTone(binanceStats?.fundingSum24h)}>{signedPct(binanceStats?.fundingSum24h, 4)}</strong>
+            </div>
+            <div className="compare-row">
+              <span>7d 单期平均</span>
+              <strong className={basisTone(stats?.fundingAverage7d)}>{signedPct(stats?.fundingAverage7d, 4)}</strong>
+              <strong className={basisTone(binanceStats?.fundingAverage7d)}>{signedPct(binanceStats?.fundingAverage7d, 4)}</strong>
+            </div>
           </div>
 
-          <div className="pressure-block">
-            <div><span>主动买入</span><strong>{takerBuyShare.toFixed(0)}%</strong><span>主动卖出</span></div>
-            <div className="split-track"><i className="buy" style={{ width: `${takerBuyShare}%` }} /></div>
-          </div>
-          <div className="pressure-block">
-            <div><span>多头账户</span><strong>{fmt(stats?.longShortAccountRatio, 2)} L/S</strong><span>空头账户</span></div>
-            <div className="split-track"><i className="accounts" style={{ width: `${longAccountShare}%` }} /></div>
-          </div>
           <div className="pressure-block">
             <div><span>多头爆仓</span><strong>{money(liquidationTotal || null, true)}</strong><span>空头爆仓</span></div>
             <div className="split-track"><i className="liquidations" style={{ width: `${longLiquidationShare}%` }} /></div>
           </div>
 
           <p className="data-caveat">
-            账户多空比按账户数量计算，不代表资金金额；爆仓仅统计 OKX 公共接口已报告成交。
+            账户多空比按账户数量计算，大户持仓比按 Top Trader 持仓量计算，均不代表全市场资金金额；OKX 爆仓来自公共已报告成交，Binance 爆仓由本站强平流自采集（自部署时刻起累积）；Binance 主动成交量按当前标记价折算为美元。
           </p>
         </section>
       </section>
@@ -1332,7 +1381,7 @@ function FuturesWorkspace({ snapshot }: { snapshot: FuturesBasisSnapshot | null 
       <section className="panel term-structure-panel">
         <div className="panel-title spread">
           <span><LineChart size={17} /> 交割合约期限结构</span>
-          <em>{dated.length} TENORS · {steepness !== null && steepness >= 0 ? "STEEPENING" : "FLATTENING"}</em>
+          <em>OKX · {dated.length} TENORS · 斜率 {signedPct(steepness)} · {steepness !== null && steepness >= 0 ? "STEEPENING" : "FLATTENING"}</em>
         </div>
         {dated.length === 0 ? (
           <div className="empty-state">等待 OKX 交割合约数据</div>
@@ -1373,10 +1422,10 @@ function FuturesWorkspace({ snapshot }: { snapshot: FuturesBasisSnapshot | null 
             <span>年化 Carry</span><span>OI</span><span>24h 成交额</span><span>Spread</span><span>到期</span>
           </div>
           {curve.length === 0 ? (
-            <div className="empty-state">正在连接 OKX 实时行情</div>
+            <div className="empty-state">正在连接交易所实时行情</div>
           ) : curve.map((point) => (
-            <div className="futures-row" key={point.symbol}>
-              <span data-label="合约"><strong>{tenorLabel(point)}</strong><em>{point.symbol}</em></span>
+            <div className="futures-row" key={`${point.exchange}-${point.symbol}`}>
+              <span data-label="合约"><strong>{tenorLabel(point)}</strong><em>{point.exchange} · {point.symbol}</em></span>
               <span data-label="Mark">{money(point.markPx)}</span>
               <span data-label="24h" className={basisTone(point.change24hPct)}>{signedPct(point.change24hPct)}</span>
               <span data-label="Premium / Basis" className={basisTone(point.basisPct)}>{signedPct(point.basisPct)}</span>

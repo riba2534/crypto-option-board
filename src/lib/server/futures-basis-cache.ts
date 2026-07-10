@@ -1,4 +1,4 @@
-import { FuturesBasisSnapshot } from "@/lib/types";
+import { FuturesBasisSnapshot, FuturesCurvePoint } from "@/lib/types";
 import {
   getMarketDbPath,
   readStoredFuturesBasisSnapshot,
@@ -11,11 +11,17 @@ import {
   startOkxFuturesFeed
 } from "@/lib/server/okx-futures-client";
 import { getOkxFuturesMarketStats } from "@/lib/server/okx-futures-market-stats";
+import {
+  getBinanceFeedHealth,
+  getBinanceFuturesCurve,
+  startBinanceFuturesFeed
+} from "@/lib/server/binance-futures-client";
+import { getBinanceFuturesMarketStats } from "@/lib/server/binance-futures-market-stats";
 
 const PERSIST_INTERVAL_MS = Number(process.env.FUTURES_BASIS_PERSIST_MS ?? 30_000);
 const STALE_AFTER_MS = Number(process.env.FUTURES_BASIS_STALE_MS ?? 180_000);
 const HISTORY_HOURS = Number(process.env.FUTURES_BASIS_HISTORY_HOURS ?? 24);
-const SOURCE = "okx-usd-ws";
+const SOURCE = "okx-ws+binance-rest";
 
 interface CollectorState {
   started: boolean;
@@ -33,6 +39,17 @@ function getCollector(): CollectorState {
   return globalForCollector.__futuresBasisCollector;
 }
 
+// Perps first (OKX then Binance), dated tenors after (OKX then Binance).
+function mergeCurves(okx: FuturesCurvePoint[], binance: FuturesCurvePoint[]): FuturesCurvePoint[] {
+  const isPerp = (point: FuturesCurvePoint) => point.contractType === "PERPETUAL";
+  return [
+    ...okx.filter(isPerp),
+    ...binance.filter(isPerp),
+    ...okx.filter((point) => !isPerp(point)),
+    ...binance.filter((point) => !isPerp(point))
+  ];
+}
+
 function emptySnapshot(status: FuturesBasisSnapshot["status"], error: string | null): FuturesBasisSnapshot {
   const now = Date.now();
   return {
@@ -47,20 +64,21 @@ function emptySnapshot(status: FuturesBasisSnapshot["status"], error: string | n
     indexPx: null,
     curve: [],
     history: [],
-    marketStats: null
+    marketStats: null,
+    binanceMarketStats: null
   };
 }
 
 function persistSnapshot() {
   const startedAt = Date.now();
-  const live = getOkxFuturesCurve();
-  if (live.curve.length === 0) {
+  const curve = mergeCurves(getOkxFuturesCurve().curve, getBinanceFuturesCurve().curve);
+  if (curve.length === 0) {
     return;
   }
 
   try {
-    const rawBySymbol = new Map<string, unknown>(live.curve.map((point) => [point.symbol, point]));
-    saveFuturesBasisSnapshot(live.curve, rawBySymbol);
+    const rawBySymbol = new Map<string, unknown>(curve.map((point) => [point.symbol, point]));
+    saveFuturesBasisSnapshot(curve, rawBySymbol);
     recordCollectorRun(SOURCE, "ok", startedAt, null);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -76,6 +94,7 @@ export function startFuturesBasisCollector() {
 
   collector.started = true;
   startOkxFuturesFeed();
+  startBinanceFuturesFeed();
 
   collector.timer = setInterval(persistSnapshot, PERSIST_INTERVAL_MS);
   collector.timer.unref?.();
@@ -85,12 +104,17 @@ export async function getFuturesBasisSnapshot(): Promise<FuturesBasisSnapshot> {
   startFuturesBasisCollector();
 
   const now = Date.now();
-  const live = getOkxFuturesCurve();
+  const okxLive = getOkxFuturesCurve();
+  const binanceLive = getBinanceFuturesCurve();
+  const curve = mergeCurves(okxLive.curve, binanceLive.curve);
   const stored = readStoredFuturesBasisSnapshot(HISTORY_HOURS);
-  const marketStats = await getOkxFuturesMarketStats();
+  const [marketStats, binanceMarketStats] = await Promise.all([
+    getOkxFuturesMarketStats(),
+    getBinanceFuturesMarketStats()
+  ]);
 
-  if (live.curve.length > 0) {
-    const refreshedAt = live.refreshedAt ?? now;
+  if (curve.length > 0) {
+    const refreshedAt = Math.max(okxLive.refreshedAt ?? 0, binanceLive.refreshedAt ?? 0) || now;
     const ageMs = now - refreshedAt;
     return {
       status: ageMs > STALE_AFTER_MS ? "stale" : "ok",
@@ -101,10 +125,11 @@ export async function getFuturesBasisSnapshot(): Promise<FuturesBasisSnapshot> {
       source: SOURCE,
       error: null,
       dbPath: getMarketDbPath(),
-      indexPx: live.indexPx,
-      curve: live.curve,
+      indexPx: okxLive.indexPx,
+      curve,
       history: stored?.history ?? [],
-      marketStats
+      marketStats,
+      binanceMarketStats
     };
   }
 
@@ -116,7 +141,8 @@ export async function getFuturesBasisSnapshot(): Promise<FuturesBasisSnapshot> {
       generatedAt: now,
       ageMs,
       nextRefreshAt: now + PERSIST_INTERVAL_MS,
-      marketStats
+      marketStats,
+      binanceMarketStats
     };
   }
 
@@ -127,26 +153,46 @@ export function getFuturesBasisHealth() {
   startFuturesBasisCollector();
 
   const now = Date.now();
-  const live = getOkxFuturesCurve();
-  const feed = getOkxFeedHealth();
+  const okxLive = getOkxFuturesCurve();
+  const binanceLive = getBinanceFuturesCurve();
+  const okxFeed = getOkxFeedHealth();
+  const binanceFeed = getBinanceFeedHealth();
+  const curveCount = okxLive.curve.length + binanceLive.curve.length;
   const stored = readStoredFuturesBasisSnapshot(HISTORY_HOURS);
-  const refreshedAt = live.refreshedAt ?? stored?.refreshedAt ?? null;
+  const refreshedAt =
+    Math.max(okxLive.refreshedAt ?? 0, binanceLive.refreshedAt ?? 0) || stored?.refreshedAt || null;
   const ageMs = refreshedAt !== null ? now - refreshedAt : null;
   const status =
-    live.curve.length > 0 ? (ageMs !== null && ageMs > STALE_AFTER_MS ? "stale" : "ok") : "warming";
+    curveCount > 0 ? (ageMs !== null && ageMs > STALE_AFTER_MS ? "stale" : "ok") : "warming";
 
   return {
     status,
-    connected: feed.connected,
+    connected: okxFeed.connected && binanceFeed.connected,
     refreshedAt,
     ageMs,
-    pointCount: live.curve.length,
+    pointCount: curveCount,
     historyCount: stored?.history.length ?? 0,
-    instrumentCount: feed.instrumentCount,
-    lastMessageAt: feed.lastMessageAt,
-    connErrors: feed.connErrors,
+    instrumentCount: okxFeed.instrumentCount + binanceFeed.instrumentCount,
+    lastMessageAt: okxFeed.lastMessageAt,
+    connErrors: okxFeed.connErrors + binanceFeed.connErrors,
     source: SOURCE,
     dbPath: getMarketDbPath(),
-    error: null
+    error: null,
+    okx: {
+      connected: okxFeed.connected,
+      instrumentCount: okxFeed.instrumentCount,
+      lastMessageAt: okxFeed.lastMessageAt,
+      connErrors: okxFeed.connErrors
+    },
+    binance: {
+      connected: binanceFeed.connected,
+      instrumentCount: binanceFeed.instrumentCount,
+      lastSuccessAt: binanceFeed.lastSuccessAt,
+      connErrors: binanceFeed.connErrors,
+      lastError: binanceFeed.lastError,
+      backfillDone: binanceFeed.backfillDone,
+      backfilledRows: binanceFeed.backfilledRows,
+      liquidationStreams: binanceFeed.liquidationStreams
+    }
   };
 }
