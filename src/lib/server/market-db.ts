@@ -48,7 +48,7 @@ function marketDbPath() {
     return process.env.MARKET_DB_PATH;
   }
 
-  if (process.env.NODE_ENV === "production") {
+  if (process.env.NODE_ENV === "production" && existsSync("/data")) {
     return "/data/market.sqlite";
   }
 
@@ -296,8 +296,20 @@ function rowToCurvePoint(row: StoredFuturesBasisRow): FuturesCurvePoint {
     annualizedFunding: row.annualized_funding,
     nextFundingTime: row.next_funding_time,
     openInterest: row.open_interest,
+    openInterestUsd:
+      row.open_interest !== null && row.index_px !== null ? row.open_interest * row.index_px : null,
     volume24h: row.volume_24h,
     quoteVolume24h: row.quote_volume_24h,
+    lastPx: row.mark_px,
+    open24h: null,
+    high24h: null,
+    low24h: null,
+    change24hPct: null,
+    bidPx: null,
+    askPx: null,
+    bidSize: null,
+    askSize: null,
+    spreadBps: null,
     sourceTs: row.source_ts
   };
 }
@@ -312,7 +324,9 @@ function rowToHistoryPoint(row: StoredFuturesBasisRow): FuturesBasisHistoryPoint
     fundingRate: row.funding_rate,
     annualizedFunding: row.annualized_funding,
     markPx: row.mark_px,
-    indexPx: row.index_px
+    indexPx: row.index_px,
+    openInterest: row.open_interest,
+    volume24h: row.volume_24h
   };
 }
 
@@ -369,6 +383,7 @@ export function readStoredFuturesBasisSnapshot(historyHours = DEFAULT_HISTORY_HO
     dbPath: getMarketDbPath(),
     indexPx: curve.find((point) => point.indexPx !== null)?.indexPx ?? null,
     curve,
-    history: historyRows.map(rowToHistoryPoint)
+    history: historyRows.map(rowToHistoryPoint),
+    marketStats: null
   };
 }

@@ -90,7 +90,7 @@ export interface OptionSnapshot {
   options: OptionContract[];
 }
 
-export type FuturesContractType = "PERPETUAL" | "CURRENT_QUARTER" | "NEXT_QUARTER";
+export type FuturesContractType = "PERPETUAL" | "DATED" | "CURRENT_QUARTER" | "NEXT_QUARTER";
 
 export interface FuturesCurvePoint {
   exchange: string;
@@ -109,8 +109,19 @@ export interface FuturesCurvePoint {
   annualizedFunding: number | null;
   nextFundingTime: number | null;
   openInterest: number | null;
+  openInterestUsd: number | null;
   volume24h: number | null;
   quoteVolume24h: number | null;
+  lastPx: number | null;
+  open24h: number | null;
+  high24h: number | null;
+  low24h: number | null;
+  change24hPct: number | null;
+  bidPx: number | null;
+  askPx: number | null;
+  bidSize: number | null;
+  askSize: number | null;
+  spreadBps: number | null;
   sourceTs: number | null;
 }
 
@@ -124,6 +135,21 @@ export interface FuturesBasisHistoryPoint {
   annualizedFunding: number | null;
   markPx: number | null;
   indexPx: number | null;
+  openInterest: number | null;
+  volume24h: number | null;
+}
+
+export interface FuturesMarketStats {
+  takerBuyVolume24h: number | null;
+  takerSellVolume24h: number | null;
+  takerImbalance24h: number | null;
+  longShortAccountRatio: number | null;
+  longLiquidations24hUsd: number | null;
+  shortLiquidations24hUsd: number | null;
+  lastRealizedFundingRate: number | null;
+  fundingSum24h: number | null;
+  fundingAverage7d: number | null;
+  updatedAt: number | null;
 }
 
 export interface FuturesBasisSnapshot {
@@ -138,4 +164,5 @@ export interface FuturesBasisSnapshot {
   indexPx: number | null;
   curve: FuturesCurvePoint[];
   history: FuturesBasisHistoryPoint[];
+  marketStats: FuturesMarketStats | null;
 }

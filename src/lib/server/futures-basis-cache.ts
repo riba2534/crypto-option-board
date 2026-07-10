@@ -10,6 +10,7 @@ import {
   getOkxFuturesCurve,
   startOkxFuturesFeed
 } from "@/lib/server/okx-futures-client";
+import { getOkxFuturesMarketStats } from "@/lib/server/okx-futures-market-stats";
 
 const PERSIST_INTERVAL_MS = Number(process.env.FUTURES_BASIS_PERSIST_MS ?? 30_000);
 const STALE_AFTER_MS = Number(process.env.FUTURES_BASIS_STALE_MS ?? 180_000);
@@ -45,7 +46,8 @@ function emptySnapshot(status: FuturesBasisSnapshot["status"], error: string | n
     dbPath: getMarketDbPath(),
     indexPx: null,
     curve: [],
-    history: []
+    history: [],
+    marketStats: null
   };
 }
 
@@ -85,6 +87,7 @@ export async function getFuturesBasisSnapshot(): Promise<FuturesBasisSnapshot> {
   const now = Date.now();
   const live = getOkxFuturesCurve();
   const stored = readStoredFuturesBasisSnapshot(HISTORY_HOURS);
+  const marketStats = await getOkxFuturesMarketStats();
 
   if (live.curve.length > 0) {
     const refreshedAt = live.refreshedAt ?? now;
@@ -100,7 +103,8 @@ export async function getFuturesBasisSnapshot(): Promise<FuturesBasisSnapshot> {
       dbPath: getMarketDbPath(),
       indexPx: live.indexPx,
       curve: live.curve,
-      history: stored?.history ?? []
+      history: stored?.history ?? [],
+      marketStats
     };
   }
 
@@ -111,7 +115,8 @@ export async function getFuturesBasisSnapshot(): Promise<FuturesBasisSnapshot> {
       status: ageMs !== null && ageMs > STALE_AFTER_MS ? "stale" : stored.status,
       generatedAt: now,
       ageMs,
-      nextRefreshAt: now + PERSIST_INTERVAL_MS
+      nextRefreshAt: now + PERSIST_INTERVAL_MS,
+      marketStats
     };
   }
 

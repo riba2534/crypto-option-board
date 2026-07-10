@@ -3,9 +3,11 @@ import { saveMarketInstruments } from "@/lib/server/market-db";
 
 const OKX_BASE_URL = process.env.OKX_BASE_URL ?? "https://www.okx.com";
 const OKX_WS_PUBLIC_URL = process.env.OKX_WS_PUBLIC_URL ?? "wss://ws.okx.com:8443/ws/v5/public";
-const UNDERLYING = "BTC-USD";
-const SWAP_INST_ID = "BTC-USD-SWAP";
-const INDEX_INST_ID = "BTC-USD";
+const COIN_UNDERLYING = "BTC-USD";
+const PERPETUALS = [
+  { instId: "BTC-USDT-SWAP", pair: "BTC-USDT", label: "USDT Perp", marginAsset: "USDT" },
+  { instId: "BTC-USD-SWAP", pair: "BTC-USD", label: "Coin Perp", marginAsset: "BTC" }
+] as const;
 const FUNDING_INTERVAL_HOURS = 8;
 const REQUEST_TIMEOUT_MS = 5000;
 const INSTRUMENT_REFRESH_MS = 6 * 60 * 60 * 1000;
@@ -25,9 +27,11 @@ interface OkxWsInstrument {
 
 interface InstrumentMeta {
   instId: string;
+  pair: string;
   contractType: FuturesContractType;
   label: string;
   expiryTs: number | null;
+  marginAsset: string;
 }
 
 interface MarkState {
@@ -43,6 +47,14 @@ interface OiState {
 
 interface TickerState {
   volCcy24h: number | null;
+  lastPx: number | null;
+  open24h: number | null;
+  high24h: number | null;
+  low24h: number | null;
+  bidPx: number | null;
+  askPx: number | null;
+  bidSize: number | null;
+  askSize: number | null;
   ts: number;
 }
 
@@ -54,6 +66,7 @@ interface IndexState {
 interface FundingState {
   rate: number | null;
   nextFundingTime: number | null;
+  intervalHours: number;
   ts: number;
 }
 
@@ -61,8 +74,8 @@ interface LiveState {
   mark: Map<string, MarkState>;
   oi: Map<string, OiState>;
   ticker: Map<string, TickerState>;
-  index: IndexState | null;
-  funding: FundingState | null;
+  index: Map<string, IndexState>;
+  funding: Map<string, FundingState>;
 }
 
 interface FeedState {
@@ -94,7 +107,7 @@ function createState(): FeedState {
     started: false,
     ws: null,
     instruments: [],
-    live: { mark: new Map(), oi: new Map(), ticker: new Map(), index: null, funding: null },
+    live: { mark: new Map(), oi: new Map(), ticker: new Map(), index: new Map(), funding: new Map() },
     lastMessageAt: null,
     reconnectDelay: RECONNECT_BASE_MS,
     reconnectTimer: null,
@@ -119,16 +132,17 @@ function toNumber(value: string | number | null | undefined): number | null {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
-function annualizeFunding(rate: number | null) {
+function annualizeFunding(rate: number | null, intervalHours = FUNDING_INTERVAL_HOURS) {
   if (rate === null) return null;
-  return rate * (24 / FUNDING_INTERVAL_HOURS) * 365;
+  return rate * (24 / intervalHours) * 365;
 }
 
 function sortContractType(a: FuturesContractType, b: FuturesContractType) {
   const order: Record<FuturesContractType, number> = {
     PERPETUAL: 0,
-    CURRENT_QUARTER: 1,
-    NEXT_QUARTER: 2
+    DATED: 1,
+    CURRENT_QUARTER: 2,
+    NEXT_QUARTER: 3
   };
   return order[a] - order[b];
 }
@@ -167,36 +181,41 @@ async function fetchOkx<T>(path: string): Promise<T[]> {
 
 async function fetchFuturesInstruments(): Promise<InstrumentMeta[]> {
   const futures = await fetchOkx<OkxWsInstrument>(
-    `/api/v5/public/instruments?instType=FUTURES&uly=${UNDERLYING}`
+    `/api/v5/public/instruments?instType=FUTURES&uly=${COIN_UNDERLYING}`
   );
-  const isStandardCoinM = (item: OkxWsInstrument) => /^BTC-USD-\d{6}$/.test(item.instId) && item.state === "live";
-  const pickAlias = (alias: string) => futures.find((item) => item.alias === alias && isStandardCoinM(item));
+  const aliasLabels: Record<string, string> = {
+    this_week: "本周",
+    next_week: "次周",
+    this_month: "本月",
+    next_month: "次月",
+    quarter: "当季",
+    next_quarter: "次季"
+  };
+  const dated = futures
+    .filter((item) => /^BTC-USD-\d{6}$/.test(item.instId) && item.state === "live")
+    .map((item): InstrumentMeta => ({
+      instId: item.instId,
+      pair: COIN_UNDERLYING,
+      contractType:
+        item.alias === "quarter"
+          ? "CURRENT_QUARTER"
+          : item.alias === "next_quarter"
+            ? "NEXT_QUARTER"
+            : "DATED",
+      label: aliasLabels[item.alias] ?? item.alias,
+      expiryTs: toNumber(item.expTime),
+      marginAsset: "BTC"
+    }))
+    .sort((a, b) => (a.expiryTs ?? Infinity) - (b.expiryTs ?? Infinity));
 
-  const metas: InstrumentMeta[] = [
-    { instId: SWAP_INST_ID, contractType: "PERPETUAL", label: "Perp", expiryTs: null }
+  return [
+    ...PERPETUALS.map((item): InstrumentMeta => ({
+      ...item,
+      contractType: "PERPETUAL",
+      expiryTs: null
+    })),
+    ...dated
   ];
-
-  const quarter = pickAlias("quarter");
-  if (quarter) {
-    metas.push({
-      instId: quarter.instId,
-      contractType: "CURRENT_QUARTER",
-      label: "Current Q",
-      expiryTs: toNumber(quarter.expTime)
-    });
-  }
-
-  const nextQuarter = pickAlias("next_quarter");
-  if (nextQuarter) {
-    metas.push({
-      instId: nextQuarter.instId,
-      contractType: "NEXT_QUARTER",
-      label: "Next Q",
-      expiryTs: toNumber(nextQuarter.expTime)
-    });
-  }
-
-  return metas;
 }
 
 function persistInstruments(instruments: InstrumentMeta[]) {
@@ -205,12 +224,12 @@ function persistInstruments(instruments: InstrumentMeta[]) {
       instruments.map((meta) => ({
         exchange: "OKX",
         symbol: meta.instId,
-        pair: UNDERLYING,
+        pair: meta.pair,
         marketType: "FUTURES",
         contractType: meta.contractType,
         baseAsset: "BTC",
-        quoteAsset: "USD",
-        marginAsset: "BTC",
+        quoteAsset: meta.pair.endsWith("USDT") ? "USDT" : "USD",
+        marginAsset: meta.marginAsset,
         expiryTs: meta.expiryTs,
         status: "live",
         raw: meta
@@ -228,8 +247,12 @@ function subscriptionArgs(instruments: InstrumentMeta[]) {
     args.push({ channel: "tickers", instId: meta.instId });
     args.push({ channel: "open-interest", instId: meta.instId });
   }
-  args.push({ channel: "index-tickers", instId: INDEX_INST_ID });
-  args.push({ channel: "funding-rate", instId: SWAP_INST_ID });
+  for (const pair of [...new Set(instruments.map((item) => item.pair))]) {
+    args.push({ channel: "index-tickers", instId: pair });
+  }
+  for (const meta of instruments.filter((item) => item.contractType === "PERPETUAL")) {
+    args.push({ channel: "funding-rate", instId: meta.instId });
+  }
   return args;
 }
 
@@ -256,20 +279,41 @@ function handleChannelData(state: FeedState, channel: string, instId: string, ro
       break;
     }
     case "tickers": {
-      state.live.ticker.set(instId, { volCcy24h: toNumber(row.volCcy24h), ts });
+      state.live.ticker.set(instId, {
+        volCcy24h: toNumber(row.volCcy24h),
+        lastPx: toNumber(row.last),
+        open24h: toNumber(row.open24h),
+        high24h: toNumber(row.high24h),
+        low24h: toNumber(row.low24h),
+        bidPx: toNumber(row.bidPx),
+        askPx: toNumber(row.askPx),
+        bidSize: toNumber(row.bidSz),
+        askSize: toNumber(row.askSz),
+        ts
+      });
       break;
     }
     case "index-tickers": {
       const idxPx = toNumber(row.idxPx);
-      if (idxPx !== null) state.live.index = { idxPx, ts };
+      if (idxPx !== null) state.live.index.set(instId, { idxPx, ts });
       break;
     }
     case "funding-rate": {
-      state.live.funding = {
+      const fundingTime = toNumber(row.fundingTime);
+      const followingFundingTime = toNumber(row.nextFundingTime);
+      const derivedIntervalHours =
+        fundingTime !== null && followingFundingTime !== null && followingFundingTime > fundingTime
+          ? (followingFundingTime - fundingTime) / (60 * 60 * 1000)
+          : FUNDING_INTERVAL_HOURS;
+      state.live.funding.set(instId, {
         rate: toNumber(row.fundingRate),
-        nextFundingTime: toNumber(row.fundingTime),
+        nextFundingTime: fundingTime ?? followingFundingTime,
+        intervalHours:
+          derivedIntervalHours >= 0.5 && derivedIntervalHours <= 24
+            ? derivedIntervalHours
+            : FUNDING_INTERVAL_HOURS,
         ts
-      };
+      });
       break;
     }
     default:
@@ -421,18 +465,29 @@ export function startOkxFuturesFeed() {
 export function getOkxFuturesCurve(): OkxFuturesLive {
   const state = getState();
   const { live } = state;
-  const indexPx = live.index?.idxPx ?? null;
+  const indexPx = live.index.get(COIN_UNDERLYING)?.idxPx ?? live.index.get("BTC-USDT")?.idxPx ?? null;
   const now = Date.now();
 
   const curve = [...state.instruments]
-    .sort((a, b) => sortContractType(a.contractType, b.contractType))
+    .sort((a, b) => {
+      const typeOrder = sortContractType(a.contractType, b.contractType);
+      if (typeOrder !== 0) return typeOrder;
+      if (a.contractType === "PERPETUAL") return a.instId.localeCompare(b.instId);
+      return (a.expiryTs ?? Infinity) - (b.expiryTs ?? Infinity);
+    })
     .map((meta): FuturesCurvePoint => {
       const mark = live.mark.get(meta.instId) ?? null;
       const oi = live.oi.get(meta.instId) ?? null;
       const ticker = live.ticker.get(meta.instId) ?? null;
+      const instrumentIndex = live.index.get(meta.pair) ?? null;
+      const funding = live.funding.get(meta.instId) ?? null;
+      const instrumentIndexPx = instrumentIndex?.idxPx ?? null;
       const markPx = mark?.px ?? null;
-      const basisAbs = markPx !== null && indexPx !== null ? markPx - indexPx : null;
-      const basisPct = markPx !== null && indexPx !== null && indexPx !== 0 ? markPx / indexPx - 1 : null;
+      const basisAbs = markPx !== null && instrumentIndexPx !== null ? markPx - instrumentIndexPx : null;
+      const basisPct =
+        markPx !== null && instrumentIndexPx !== null && instrumentIndexPx !== 0
+          ? markPx / instrumentIndexPx - 1
+          : null;
       const dte =
         meta.expiryTs !== null ? Math.max((meta.expiryTs - now) / (24 * 60 * 60 * 1000), 0) : null;
       const annualizedBasis =
@@ -441,30 +496,53 @@ export function getOkxFuturesCurve(): OkxFuturesLive {
           : basisPct !== null && dte !== null && dte > 0
             ? basisPct * (365 / dte)
             : null;
-      const fundingRate = meta.contractType === "PERPETUAL" ? live.funding?.rate ?? null : null;
+      const fundingRate = meta.contractType === "PERPETUAL" ? funding?.rate ?? null : null;
       const volCcy24h = ticker?.volCcy24h ?? null;
-      const quoteVolume24h = volCcy24h !== null && markPx !== null ? volCcy24h * markPx : oi?.oiUsd ?? null;
-      const sourceTs = mark?.ts ?? live.index?.ts ?? null;
+      const quoteVolume24h = volCcy24h !== null && markPx !== null ? volCcy24h * markPx : null;
+      const sourceTs = Math.max(mark?.ts ?? 0, ticker?.ts ?? 0, instrumentIndex?.ts ?? 0) || null;
+      const lastPx = ticker?.lastPx ?? null;
+      const open24h = ticker?.open24h ?? null;
+      const change24hPct =
+        lastPx !== null && open24h !== null && open24h !== 0 ? lastPx / open24h - 1 : null;
+      const midPx =
+        ticker?.bidPx !== null && ticker?.bidPx !== undefined && ticker?.askPx !== null && ticker?.askPx !== undefined
+          ? (ticker.bidPx + ticker.askPx) / 2
+          : null;
+      const spreadBps =
+        midPx !== null && midPx > 0 && ticker?.askPx !== null && ticker?.askPx !== undefined && ticker?.bidPx !== null && ticker?.bidPx !== undefined
+          ? ((ticker.askPx - ticker.bidPx) / midPx) * 10_000
+          : null;
 
       return {
         exchange: "OKX",
-        pair: UNDERLYING,
+        pair: meta.pair,
         symbol: meta.instId,
         contractType: meta.contractType,
         label: meta.label,
         expiryTs: meta.expiryTs,
         dte,
-        indexPx,
+        indexPx: instrumentIndexPx,
         markPx,
         basisAbs,
         basisPct,
         annualizedBasis,
         fundingRate,
-        annualizedFunding: annualizeFunding(fundingRate),
-        nextFundingTime: meta.contractType === "PERPETUAL" ? live.funding?.nextFundingTime ?? null : null,
+        annualizedFunding: annualizeFunding(fundingRate, funding?.intervalHours),
+        nextFundingTime: meta.contractType === "PERPETUAL" ? funding?.nextFundingTime ?? null : null,
         openInterest: oi?.oiCcy ?? null,
+        openInterestUsd: oi?.oiUsd ?? null,
         volume24h: volCcy24h,
         quoteVolume24h,
+        lastPx,
+        open24h,
+        high24h: ticker?.high24h ?? null,
+        low24h: ticker?.low24h ?? null,
+        change24hPct,
+        bidPx: ticker?.bidPx ?? null,
+        askPx: ticker?.askPx ?? null,
+        bidSize: ticker?.bidSize ?? null,
+        askSize: ticker?.askSize ?? null,
+        spreadBps,
         sourceTs
       };
     });
@@ -491,8 +569,8 @@ export function getOkxFeedHealth() {
     lastMessageAt: state.lastMessageAt,
     instrumentCount: state.instruments.length,
     markCount: state.live.mark.size,
-    hasIndex: state.live.index !== null,
-    hasFunding: state.live.funding !== null,
+    hasIndex: state.live.index.size > 0,
+    hasFunding: state.live.funding.size > 0,
     connErrors: state.connErrors
   };
 }

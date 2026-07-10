@@ -29,7 +29,9 @@ const child = spawn(process.execPath, [serverEntry], {
   env: {
     ...process.env,
     HOSTNAME: hostname,
-    PORT: port
+    PORT: port,
+    MARKET_DB_PATH:
+      process.env.MARKET_DB_PATH ?? (existsSync("/data") ? "/data/market.sqlite" : join(root, ".data", "market.sqlite"))
   }
 });
 
