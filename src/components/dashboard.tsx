@@ -69,21 +69,24 @@ const usdPremium = new Intl.NumberFormat("en-US", {
   maximumFractionDigits: 2
 });
 
-const usdCompact = new Intl.NumberFormat("en-US", {
-  style: "currency",
-  currency: "USD",
-  notation: "compact",
-  maximumFractionDigits: 1
-});
-
 const number = new Intl.NumberFormat("en-US", {
   maximumFractionDigits: 2
 });
 
-const compact = new Intl.NumberFormat("en-US", {
-  notation: "compact",
-  maximumFractionDigits: 1
-});
+// Intl compact notation differs between Node/ICU and browsers for exact units
+// (Node 22 can render 1,000,000 as "1.0M" while Chrome renders "1M"). That
+// textual difference breaks React hydration, so use one deterministic formatter
+// on both sides.
+function compactValue(value: number) {
+  const absolute = Math.abs(value);
+  const unit = absolute >= 1e12 ? [1e12, "T"] : absolute >= 1e9 ? [1e9, "B"] : absolute >= 1e6 ? [1e6, "M"] : absolute >= 1e3 ? [1e3, "K"] : null;
+  if (!unit) return Number.isInteger(value) ? String(value) : value.toFixed(1).replace(/\.0$/, "");
+  const scaled = value / (unit[0] as number);
+  return `${scaled.toFixed(1).replace(/\.0$/, "")}${unit[1]}`;
+}
+
+const compact = { format: compactValue };
+const usdCompact = { format: (value: number) => `$${compactValue(value)}` };
 
 function pct(value: number | null | undefined, digits = 1) {
   if (value === null || value === undefined || !Number.isFinite(value)) {
@@ -211,14 +214,9 @@ function formatDateTime(value: number | null | undefined) {
     return "--";
   }
 
-  return new Intl.DateTimeFormat("zh-CN", {
-    timeZone: "Asia/Shanghai",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    hour12: false
-  }).format(value);
+  const chinaTime = new Date(value + 8 * 60 * 60 * 1000);
+  const pad = (part: number) => String(part).padStart(2, "0");
+  return `${pad(chinaTime.getUTCMonth() + 1)}/${pad(chinaTime.getUTCDate())} ${pad(chinaTime.getUTCHours())}:${pad(chinaTime.getUTCMinutes())}`;
 }
 
 function tenorLabel(point: FuturesCurvePoint) {
