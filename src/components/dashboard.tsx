@@ -211,7 +211,14 @@ function formatDateTime(value: number | null | undefined) {
     return "--";
   }
 
-  return new Date(value).toLocaleString();
+  return new Intl.DateTimeFormat("zh-CN", {
+    timeZone: "Asia/Shanghai",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false
+  }).format(value);
 }
 
 function tenorLabel(point: FuturesCurvePoint) {
@@ -1002,7 +1009,7 @@ export function Dashboard({ initialSnapshot }: DashboardProps) {
 
               <div className="timestamp">
                 <Clock3 size={14} />
-                报价时间 {selected.updatedAt ? new Date(selected.updatedAt).toLocaleTimeString() : "--"}
+                报价时间 {formatDateTime(selected.updatedAt)}
               </div>
             </>
           ) : (
@@ -1115,7 +1122,7 @@ export function Dashboard({ initialSnapshot }: DashboardProps) {
                   <Metric label="盈亏平衡" value={money(selected.breakeven)} />
                   <Metric label="OTM 距离" value={pct(selected.otmPct)} />
                   <Metric label="DTE" value={`${selected.dte.toFixed(2)}D`} />
-                  <Metric label="报价年龄" value={selected.updatedAt ? `${Math.max(0, Math.round((Date.now() - selected.updatedAt) / 1000))}s` : "--"} />
+                  <Metric label="报价年龄" value={selected.updatedAt ? `${Math.max(0, Math.round(((snapshot.refreshedAt ?? snapshot.generatedAt) - selected.updatedAt) / 1000))}s` : "--"} />
                 </div>
               </section>
               <section className="mobile-detail-section">
@@ -1219,8 +1226,11 @@ function FuturesWorkspace({ snapshot }: { snapshot: FuturesBasisSnapshot | null 
   // The term-structure panel stays OKX-only: OKX carries 6 tenors while Binance
   // only lists two quarterlies, which would garble the curve shape.
   const dated = curve.filter((point) => point.contractType !== "PERPETUAL" && point.exchange === "OKX");
-  const primaryPerp = perps.find((point) => point.symbol === "BTC-USDT-SWAP") ?? perps[0] ?? null;
-  const fundingPerp = perps.find((point) => point.symbol === "BTC-USD-SWAP") ?? primaryPerp;
+  const primaryPerp =
+    perps.find((point) => point.exchange === "Binance" && point.symbol === "BTCUSDT") ??
+    perps.find((point) => point.symbol === "BTC-USDT-SWAP") ??
+    perps[0] ?? null;
+  const fundingPerp = primaryPerp;
   const currentQuarter = dated.find((point) => point.contractType === "CURRENT_QUARTER") ?? null;
   const nextQuarter = dated.find((point) => point.contractType === "NEXT_QUARTER") ?? null;
   const totalPerpOiUsd = perps.reduce((sum, point) => sum + (point.openInterestUsd ?? 0), 0);
@@ -1261,7 +1271,7 @@ function FuturesWorkspace({ snapshot }: { snapshot: FuturesBasisSnapshot | null 
         <div className="futures-hero">
           <div className="futures-hero-copy">
             <div className="futures-kicker">
-              <span>OKX + BINANCE · BTC DERIVATIVES</span>
+              <span>{primaryPerp?.exchange === "Binance" ? "BINANCE PRIMARY · OKX TERM & COMPARE" : "OKX FALLBACK · BTC DERIVATIVES"}</span>
               <em className={status}>{status.toUpperCase()} · {snapshotAge(snapshot?.ageMs)}</em>
             </div>
             <h2>杠杆、拥挤度与 Carry</h2>
@@ -1346,6 +1356,21 @@ function FuturesWorkspace({ snapshot }: { snapshot: FuturesBasisSnapshot | null 
               <strong>{fmt(binanceStats?.topTraderLongShortRatio, 2)}</strong>
             </div>
             <div className="compare-row">
+              <span>大户账户比 L/S</span>
+              <strong>{fmt(stats?.topTraderAccountRatio, 2)}</strong>
+              <strong>{fmt(binanceStats?.topTraderAccountRatio, 2)}</strong>
+            </div>
+            <div className="compare-row">
+              <span>24h OI 变化</span>
+              <strong>--</strong>
+              <strong className={basisTone(binanceStats?.openInterestChange24h)}>{signedPct(binanceStats?.openInterestChange24h)}</strong>
+            </div>
+            <div className="compare-row">
+              <span>OI / 流通市值</span>
+              <strong>--</strong>
+              <strong>{signedPct(binanceStats?.openInterestToMarketCap)}</strong>
+            </div>
+            <div className="compare-row">
               <span>24h 已报告爆仓</span>
               <strong>{money(okxLiquidationTotal || null, true)}</strong>
               <strong>{money(binanceLiquidationTotal || null, true)}</strong>
@@ -1365,6 +1390,11 @@ function FuturesWorkspace({ snapshot }: { snapshot: FuturesBasisSnapshot | null 
               <strong className={basisTone(stats?.fundingAverage7d)}>{signedPct(stats?.fundingAverage7d, 4)}</strong>
               <strong className={basisTone(binanceStats?.fundingAverage7d)}>{signedPct(binanceStats?.fundingAverage7d, 4)}</strong>
             </div>
+          </div>
+
+          <div className="exchange-risk-row">
+            <span>Binance ADL 风险 <strong className={`risk-${binanceStats?.adlRisk?.toLowerCase() ?? "unknown"}`}>{binanceStats?.adlRisk ?? "--"}</strong></span>
+            <span>稳定币保险基金 <strong>{money(binanceStats?.insuranceFundUsd, true)}</strong></span>
           </div>
 
           <div className="pressure-block">

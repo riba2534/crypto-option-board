@@ -108,6 +108,14 @@ async function loadStats(): Promise<FuturesMarketStats> {
     fundingAverage7d: funding7d.length
       ? funding7d.reduce((sum, row) => sum + row.rate, 0) / funding7d.length
       : null,
+    topTraderAccountRatio: null,
+    topTraderPositionRatio: null,
+    openInterestChange24h: null,
+    openInterestToMarketCap: null,
+    adlRisk: null,
+    insuranceFundUsd: null,
+    statsSource: "OKX",
+    liquidationSource: "OKX",
     updatedAt: now
   };
 }

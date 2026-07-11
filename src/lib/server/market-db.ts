@@ -415,6 +415,8 @@ function rowToCurvePoint(row: StoredFuturesBasisRow): FuturesCurvePoint {
 function rowToHistoryPoint(row: StoredFuturesBasisRow): FuturesBasisHistoryPoint {
   return {
     ts: row.ts,
+    exchange: row.exchange,
+    pair: row.pair,
     symbol: row.symbol,
     contractType: row.contract_type,
     basisPct: row.basis_pct,
@@ -453,19 +455,25 @@ export function readStoredFuturesBasisSnapshot(historyHours = DEFAULT_HISTORY_HO
     .all(latest.ts) as unknown as StoredFuturesBasisRow[];
 
   const minHistoryTs = Date.now() - Math.max(historyHours, 1) * 60 * 60 * 1000;
+  // The collector stores every contract every 30 seconds. Sending every dated
+  // tenor back to the browser made this endpoint grow to several megabytes and
+  // forced mobile clients to download the same payload every refresh. Charts
+  // only consume perpetual price/OI history, so keep one sample per 5-minute
+  // bucket for each exchange/symbol (at most ~1,200 rows for four 24h perps).
+  const historyBucketMs = 5 * 60 * 1000;
   const historyRows = db
     .prepare(
-      `SELECT * FROM futures_basis_snapshots
-       WHERE ts >= ?
-       ORDER BY ts ASC,
-         CASE contract_type
-           WHEN 'PERPETUAL' THEN 0
-           WHEN 'CURRENT_QUARTER' THEN 1
-           WHEN 'NEXT_QUARTER' THEN 2
-           ELSE 3
-         END`
+      `SELECT sample.*
+       FROM futures_basis_snapshots AS sample
+       INNER JOIN (
+         SELECT MAX(id) AS id
+         FROM futures_basis_snapshots
+         WHERE ts >= ? AND contract_type = 'PERPETUAL'
+         GROUP BY exchange, symbol, CAST(ts / ? AS INTEGER)
+       ) AS buckets ON buckets.id = sample.id
+       ORDER BY sample.ts ASC, sample.exchange ASC, sample.symbol ASC`
     )
-    .all(minHistoryTs) as unknown as StoredFuturesBasisRow[];
+    .all(minHistoryTs, historyBucketMs) as unknown as StoredFuturesBasisRow[];
 
   const now = Date.now();
   const curve = curveRows.map(rowToCurvePoint);

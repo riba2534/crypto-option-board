@@ -3,7 +3,7 @@ import { readFuturesLiquidationTotals } from "@/lib/server/market-db";
 
 const BINANCE_FAPI_URL = process.env.BINANCE_FAPI_URL ?? "https://fapi.binance.com";
 const CACHE_MS = 60_000;
-const REQUEST_TIMEOUT_MS = 5_000;
+const REQUEST_TIMEOUT_MS = 8_000;
 const SYMBOL = "BTCUSDT";
 
 interface CacheState {
@@ -35,7 +35,11 @@ async function fetchBinance<T>(path: string): Promise<T> {
     const response = await fetch(`${BINANCE_FAPI_URL}${path}`, {
       cache: "no-store",
       signal: controller.signal,
-      headers: { Accept: "application/json", "User-Agent": "crypto-option-board/0.1" }
+      headers: {
+        Accept: "application/json",
+        "User-Agent": "crypto-option-board/0.1",
+        ...(process.env.BINANCE_API_KEY ? { "X-MBX-APIKEY": process.env.BINANCE_API_KEY } : {})
+      }
     });
     if (!response.ok) throw new Error(`Binance ${path} HTTP ${response.status}`);
     return (await response.json()) as T;
@@ -63,21 +67,48 @@ interface FundingRow {
 
 interface PremiumIndexRow {
   markPrice: string;
+  indexPrice: string;
+}
+
+interface OpenInterestHistoryRow {
+  sumOpenInterestValue: string;
+  CMCCirculatingSupply: string;
+  timestamp: number;
+}
+
+interface InsuranceBalance {
+  assets?: Array<{ asset: string; marginBalance: string }>;
 }
 
 async function loadStats(): Promise<FuturesMarketStats> {
-  const [takerRows, ratioRows, topTraderRows, fundingRows, premium] = await Promise.all([
-    fetchBinance<TakerRatioRow[]>(`/futures/data/takerlongshortRatio?symbol=${SYMBOL}&period=1h&limit=24`),
-    fetchBinance<LongShortRatioRow[]>(`/futures/data/globalLongShortAccountRatio?symbol=${SYMBOL}&period=1h&limit=1`),
-    fetchBinance<LongShortRatioRow[]>(`/futures/data/topLongShortPositionRatio?symbol=${SYMBOL}&period=1h&limit=1`),
-    fetchBinance<FundingRow[]>(`/fapi/v1/fundingRate?symbol=${SYMBOL}&limit=30`),
-    fetchBinance<PremiumIndexRow>(`/fapi/v1/premiumIndex?symbol=${SYMBOL}`)
+  // Each metric degrades independently. One rate-limited auxiliary endpoint
+  // should not blank the complete Binance comparison card.
+  const safe = async <T,>(path: string, fallback: T): Promise<T> => {
+    try {
+      return await fetchBinance<T>(path);
+    } catch (error) {
+      console.warn(`[binance-futures] stats ${path} unavailable: ${error instanceof Error ? error.message : String(error)}`);
+      return fallback;
+    }
+  };
+
+  const [takerRows, ratioRows, topAccountRows, topPositionRows, fundingRows, oiRows, premium, adl, insurance] = await Promise.all([
+    safe<TakerRatioRow[]>(`/futures/data/takerlongshortRatio?symbol=${SYMBOL}&period=1h&limit=24`, []),
+    safe<LongShortRatioRow[]>(`/futures/data/globalLongShortAccountRatio?symbol=${SYMBOL}&period=1h&limit=1`, []),
+    safe<LongShortRatioRow[]>(`/futures/data/topLongShortAccountRatio?symbol=${SYMBOL}&period=1h&limit=1`, []),
+    safe<LongShortRatioRow[]>(`/futures/data/topLongShortPositionRatio?symbol=${SYMBOL}&period=1h&limit=1`, []),
+    safe<FundingRow[]>(`/fapi/v1/fundingRate?symbol=${SYMBOL}&limit=30`, []),
+    safe<OpenInterestHistoryRow[]>(`/futures/data/openInterestHist?symbol=${SYMBOL}&period=1h&limit=25`, []),
+    safe<PremiumIndexRow>(`/fapi/v1/premiumIndex?symbol=${SYMBOL}`, { markPrice: "", indexPrice: "" }),
+    safe<{ adlRisk?: string }>(`/fapi/v1/symbolAdlRisk?symbol=${SYMBOL}`, {}),
+    safe<InsuranceBalance>(`/fapi/v1/insuranceBalance?symbol=${SYMBOL}`, {})
   ]);
 
   const now = Date.now();
   const dayAgo = now - 24 * 60 * 60 * 1000;
   const weekAgo = now - 7 * 24 * 60 * 60 * 1000;
   const markPx = toNumber(premium.markPrice);
+  const indexPx = toNumber(premium.indexPrice);
 
   // Taker volumes are reported in BTC; convert with the current mark so both
   // exchanges surface comparable USD figures.
@@ -94,6 +125,20 @@ async function loadStats(): Promise<FuturesMarketStats> {
     .sort((a, b) => b.ts - a.ts);
   const funding24h = realized.filter((row) => row.ts >= dayAgo);
   const funding7d = realized.filter((row) => row.ts >= weekAgo);
+  const sortedOi = [...oiRows].sort((a, b) => a.timestamp - b.timestamp);
+  const latestOi = sortedOi[sortedOi.length - 1] ?? null;
+  const pastOi = sortedOi.reduce<OpenInterestHistoryRow | null>((nearest, row) => {
+    if (!nearest) return row;
+    return Math.abs(row.timestamp - dayAgo) < Math.abs(nearest.timestamp - dayAgo) ? row : nearest;
+  }, null);
+  const latestOiUsd = toNumber(latestOi?.sumOpenInterestValue);
+  const pastOiUsd = toNumber(pastOi?.sumOpenInterestValue);
+  const circulatingSupply = toNumber(latestOi?.CMCCirculatingSupply);
+  const marketCap = circulatingSupply !== null && indexPx !== null ? circulatingSupply * indexPx : null;
+  const stableAssets = new Set(["USDT", "USDC", "FDUSD", "BUSD"]);
+  const insuranceFundUsd = (insurance.assets ?? [])
+    .filter((asset) => stableAssets.has(asset.asset))
+    .reduce((sum, asset) => sum + (toNumber(asset.marginBalance) ?? 0), 0);
 
   // Binance removed the public force-order REST history, so liquidation totals
   // come from our own force-order stream persisted into SQLite.
@@ -111,7 +156,7 @@ async function loadStats(): Promise<FuturesMarketStats> {
     takerSellVolume24h,
     takerImbalance24h: takerTotalBtc > 0 ? (takerBuyBtc - takerSellBtc) / takerTotalBtc : null,
     longShortAccountRatio: toNumber(ratioRows[ratioRows.length - 1]?.longShortRatio),
-    topTraderLongShortRatio: toNumber(topTraderRows[topTraderRows.length - 1]?.longShortRatio),
+    topTraderLongShortRatio: toNumber(topPositionRows[topPositionRows.length - 1]?.longShortRatio),
     longLiquidations24hUsd: liquidations?.longUsd ?? null,
     shortLiquidations24hUsd: liquidations?.shortUsd ?? null,
     lastRealizedFundingRate: realized[0]?.rate ?? null,
@@ -119,6 +164,16 @@ async function loadStats(): Promise<FuturesMarketStats> {
     fundingAverage7d: funding7d.length
       ? funding7d.reduce((sum, row) => sum + row.rate, 0) / funding7d.length
       : null,
+    topTraderAccountRatio: toNumber(topAccountRows[topAccountRows.length - 1]?.longShortRatio),
+    topTraderPositionRatio: toNumber(topPositionRows[topPositionRows.length - 1]?.longShortRatio),
+    openInterestChange24h:
+      latestOiUsd !== null && pastOiUsd !== null && pastOiUsd > 0 ? latestOiUsd / pastOiUsd - 1 : null,
+    openInterestToMarketCap:
+      latestOiUsd !== null && marketCap !== null && marketCap > 0 ? latestOiUsd / marketCap : null,
+    adlRisk: adl.adlRisk || null,
+    insuranceFundUsd: insuranceFundUsd > 0 ? insuranceFundUsd : null,
+    statsSource: "Binance",
+    liquidationSource: "Binance 自采强平流",
     updatedAt: now
   };
 }

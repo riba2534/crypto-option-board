@@ -127,6 +127,8 @@ export interface FuturesCurvePoint {
 
 export interface FuturesBasisHistoryPoint {
   ts: number;
+  exchange: string;
+  pair: string;
   symbol: string;
   contractType: FuturesContractType;
   basisPct: number | null;
@@ -150,6 +152,14 @@ export interface FuturesMarketStats {
   lastRealizedFundingRate: number | null;
   fundingSum24h: number | null;
   fundingAverage7d: number | null;
+  topTraderAccountRatio: number | null;
+  topTraderPositionRatio: number | null;
+  openInterestChange24h: number | null;
+  openInterestToMarketCap: number | null;
+  adlRisk: string | null;
+  insuranceFundUsd: number | null;
+  statsSource: string;
+  liquidationSource: string;
   updatedAt: number | null;
 }
 

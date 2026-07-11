@@ -2696,6 +2696,49 @@ h1 {
   text-align: right;
 }
 
+.exchange-risk-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+  margin-bottom: 18px;
+}
+
+.exchange-risk-row > span {
+  display: flex;
+  min-width: 0;
+  min-height: 38px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 800;
+}
+
+.exchange-risk-row strong {
+  overflow: hidden;
+  color: var(--text);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.exchange-risk-row .risk-low {
+  color: var(--green);
+}
+
+.exchange-risk-row .risk-medium {
+  color: var(--amber);
+}
+
+.exchange-risk-row .risk-high {
+  color: var(--red);
+}
+
 .pressure-block {
   margin-top: 16px;
 }
@@ -3002,6 +3045,10 @@ h1 {
 
   .exchange-compare {
     margin: 10px 10px 0;
+  }
+
+  .exchange-risk-row {
+    margin: 0 10px 18px;
   }
 
   .pressure-block {

@@ -13,9 +13,12 @@ const BINANCE_DAPI_URL = process.env.BINANCE_DAPI_URL ?? "https://dapi.binance.c
 // but stays silent. Verified live from the production host.
 const BINANCE_FSTREAM_URL = process.env.BINANCE_FSTREAM_URL ?? "wss://fstream.binance.com/market/ws";
 const BINANCE_DSTREAM_URL = process.env.BINANCE_DSTREAM_URL ?? "wss://dstream.binance.com/market/ws";
-const POLL_INTERVAL_MS = Number(process.env.BINANCE_POLL_MS ?? 15_000);
+// REST quotes are used for breadth (USDT, coin perpetual and quarterlies). A
+// 30-second cadence keeps them fresh without continuously saturating the small
+// production VM or hitting Binance timeouts under concurrent page traffic.
+const POLL_INTERVAL_MS = Number(process.env.BINANCE_POLL_MS ?? 30_000);
 const STALE_AFTER_MS = Math.max(POLL_INTERVAL_MS * 4, 90_000);
-const REQUEST_TIMEOUT_MS = 5_000;
+const REQUEST_TIMEOUT_MS = 8_000;
 const FUNDING_INTERVAL_HOURS = 8;
 // Coin-margined BTC contracts on Binance carry a fixed $100 notional per contract.
 const COIN_CONTRACT_USD = 100;
